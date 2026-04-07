@@ -2,7 +2,8 @@
  * Mock Cloudflare SDK client for testing sync logic without real API calls.
  *
  * Provides call tracking, in-memory state stores, and state manipulation methods.
- * Designed to be extended by future sync steps (tunnel, DNS, redirect, resources).
+ * Supports: Access applications/policies, tunnel configuration, DNS records,
+ * and redirect rulesets.
  */
 
 // --- Mock types ---
@@ -21,6 +22,29 @@ export interface MockPolicy {
   name: string;
   decision: string;
   include: unknown[];
+}
+
+/** Mock DNS record */
+export interface MockDnsRecord {
+  id: string;
+  name: string;
+  type: string;
+  content: string;
+}
+
+/** Mock redirect rule */
+export interface MockRedirectRule {
+  id?: string;
+  expression?: string;
+  action?: string;
+  description?: string;
+  action_parameters?: unknown;
+}
+
+/** Mock redirect ruleset */
+export interface MockRedirectRuleset {
+  id: string;
+  rules: MockRedirectRule[];
 }
 
 // --- Pagination helper ---
@@ -48,9 +72,20 @@ export function createMockClient() {
     calls[method].push(args);
   }
 
+  function nextId(prefix: string): string {
+    return `${prefix}-${++idCounter}`;
+  }
+
+  function nextCounter(): number {
+    return ++idCounter;
+  }
+
   // State stores
   let apps: MockApp[] = [];
   let policies: Record<string, MockPolicy[]> = {}; // keyed by app ID
+  let tunnelConfig: unknown = null;
+  let dnsRecords: MockDnsRecord[] = [];
+  let redirectRuleset: MockRedirectRuleset | null = null;
 
   const client = {
     zeroTrust: {
@@ -68,7 +103,7 @@ export function createMockClient() {
               type: string;
             };
             const newApp: MockApp = {
-              id: `app-${params.name}-${++idCounter}`,
+              id: `app-${params.name}-${nextCounter()}`,
               name: params.name,
               domain: params.domain,
               type: params.type,
@@ -103,7 +138,7 @@ export function createMockClient() {
                 include: unknown[];
               };
               const newPolicy: MockPolicy = {
-                id: `policy-${params.name}-${++idCounter}`,
+                id: `policy-${params.name}-${nextCounter()}`,
                 name: params.name,
                 decision: params.decision,
                 include: params.include,
@@ -145,6 +180,94 @@ export function createMockClient() {
           },
         },
       },
+      tunnels: {
+        cloudflared: {
+          configurations: {
+            update: async (...args: unknown[]) => {
+              track("tunnelConfig.update", ...args);
+              const tunnelId = args[0] as string;
+              const params = args[1] as { config: unknown };
+              tunnelConfig = { tunnelId, config: params.config };
+              return tunnelConfig;
+            },
+          },
+        },
+      },
+    },
+    dns: {
+      records: {
+        list: (...args: unknown[]) => {
+          track("dns.records.list", ...args);
+          return mockPageResult([...dnsRecords]);
+        },
+        create: async (...args: unknown[]) => {
+          track("dns.records.create", ...args);
+          const params = args[0] as {
+            name: string;
+            type: string;
+            content: string;
+          };
+          const newRecord: MockDnsRecord = {
+            id: nextId("dns"),
+            name: params.name,
+            type: params.type,
+            content: params.content,
+          };
+          dnsRecords.push(newRecord);
+          return newRecord;
+        },
+        update: async (...args: unknown[]) => {
+          track("dns.records.update", ...args);
+          const recordId = args[0] as string;
+          const params = args[1] as {
+            name: string;
+            type: string;
+            content: string;
+          };
+          const idx = dnsRecords.findIndex((r) => r.id === recordId);
+          if (idx >= 0) {
+            dnsRecords[idx] = {
+              ...dnsRecords[idx],
+              name: params.name,
+              type: params.type,
+              content: params.content,
+            };
+          }
+          return dnsRecords[idx];
+        },
+        delete: async (...args: unknown[]) => {
+          track("dns.records.delete", ...args);
+          const recordId = args[0] as string;
+          dnsRecords = dnsRecords.filter((r) => r.id !== recordId);
+        },
+      },
+    },
+    rulesets: {
+      phases: {
+        get: async (...args: unknown[]) => {
+          track("rulesets.phases.get", ...args);
+          if (!redirectRuleset) {
+            throw new Error("No ruleset found for phase");
+          }
+          return redirectRuleset;
+        },
+        update: async (...args: unknown[]) => {
+          track("rulesets.phases.update", ...args);
+          const params = args[1] as { rules: MockRedirectRule[] };
+          if (!redirectRuleset) {
+            redirectRuleset = {
+              id: nextId("ruleset"),
+              rules: [],
+            };
+          }
+          // Assign IDs to rules that don't have them
+          redirectRuleset.rules = params.rules.map((rule) => ({
+            ...rule,
+            id: rule.id ?? nextId("rule"),
+          }));
+          return redirectRuleset;
+        },
+      },
     },
   };
 
@@ -161,6 +284,18 @@ export function createMockClient() {
     },
     getPolicies: () => policies,
     getCalls: (method: string) => calls[method] ?? [],
+    // Tunnel state
+    getTunnelConfig: () => tunnelConfig,
+    // DNS state
+    setDnsRecords: (records: MockDnsRecord[]) => {
+      dnsRecords = records;
+    },
+    getDnsRecords: () => dnsRecords,
+    // Redirect ruleset state
+    setRedirectRuleset: (ruleset: MockRedirectRuleset | null) => {
+      redirectRuleset = ruleset;
+    },
+    getRedirectRuleset: () => redirectRuleset,
   };
 }
 
