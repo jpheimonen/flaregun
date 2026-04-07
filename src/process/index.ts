@@ -1,5 +1,17 @@
 import { spawn } from "bun";
 
+// Re-export supervisor module
+export {
+  Supervisor,
+  RollingLogBuffer,
+  type ServiceState,
+  type LogEntry,
+  type LogSubscriber,
+  type ServiceInfo,
+  type SupervisedServiceConfig,
+  type SupervisorTimingConfig,
+} from "./supervisor.js";
+
 /**
  * Checks that a binary is available on PATH by attempting to run `which`.
  * Returns true if found, false otherwise.
