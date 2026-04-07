@@ -66,6 +66,13 @@ export interface MockKVNamespace {
   title: string;
 }
 
+/** Mock Pages project domain */
+export interface MockPagesDomain {
+  id: string;
+  domain: string;
+  project_name: string;
+}
+
 // --- Pagination helper ---
 
 /** Creates a paginated async iterable result matching the Cloudflare SDK's pattern. */
@@ -108,6 +115,7 @@ export function createMockClient() {
   let d1Databases: MockD1Database[] = [];
   let r2Buckets: MockR2Bucket[] = [];
   let kvNamespaces: MockKVNamespace[] = [];
+  let pagesDomains: MockPagesDomain[] = [];
 
   const client = {
     zeroTrust: {
@@ -349,6 +357,46 @@ export function createMockClient() {
         },
       },
     },
+    pages: {
+      projects: {
+        domains: {
+          get: async (...args: unknown[]) => {
+            track("pages.projects.domains.get", ...args);
+            const params = args[0] as {
+              project_name: string;
+              domain_name: string;
+              account_id: string;
+            };
+            const found = pagesDomains.find(
+              (d) =>
+                d.project_name === params.project_name &&
+                d.domain === params.domain_name,
+            );
+            if (!found) {
+              throw new Error(
+                `Custom domain ${params.domain_name} not found on project ${params.project_name}`,
+              );
+            }
+            return found;
+          },
+          create: async (...args: unknown[]) => {
+            track("pages.projects.domains.create", ...args);
+            const params = args[0] as {
+              project_name: string;
+              account_id: string;
+              body: { name: string };
+            };
+            const newDomain: MockPagesDomain = {
+              id: nextId("pages-domain"),
+              domain: params.body.name,
+              project_name: params.project_name,
+            };
+            pagesDomains.push(newDomain);
+            return newDomain;
+          },
+        },
+      },
+    },
   };
 
   return {
@@ -391,6 +439,11 @@ export function createMockClient() {
       kvNamespaces = namespaces;
     },
     getNamespaces: () => kvNamespaces,
+    // Pages project domains state
+    setPagesDomains: (domains: MockPagesDomain[]) => {
+      pagesDomains = domains;
+    },
+    getPagesDomains: () => pagesDomains,
   };
 }
 
