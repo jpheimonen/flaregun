@@ -3,7 +3,7 @@
  *
  * Provides call tracking, in-memory state stores, and state manipulation methods.
  * Supports: Access applications/policies, tunnel configuration, DNS records,
- * and redirect rulesets.
+ * redirect rulesets, D1 databases, R2 buckets, and KV namespaces.
  */
 
 // --- Mock types ---
@@ -47,6 +47,25 @@ export interface MockRedirectRuleset {
   rules: MockRedirectRule[];
 }
 
+/** Mock D1 database */
+export interface MockD1Database {
+  uuid: string;
+  name: string;
+  created_at: string;
+}
+
+/** Mock R2 bucket */
+export interface MockR2Bucket {
+  name: string;
+  creation_date: string;
+}
+
+/** Mock KV namespace */
+export interface MockKVNamespace {
+  id: string;
+  title: string;
+}
+
 // --- Pagination helper ---
 
 /** Creates a paginated async iterable result matching the Cloudflare SDK's pattern. */
@@ -86,6 +105,9 @@ export function createMockClient() {
   let tunnelConfig: unknown = null;
   let dnsRecords: MockDnsRecord[] = [];
   let redirectRuleset: MockRedirectRuleset | null = null;
+  let d1Databases: MockD1Database[] = [];
+  let r2Buckets: MockR2Bucket[] = [];
+  let kvNamespaces: MockKVNamespace[] = [];
 
   const client = {
     zeroTrust: {
@@ -269,6 +291,64 @@ export function createMockClient() {
         },
       },
     },
+    d1: {
+      database: {
+        create: async (...args: unknown[]) => {
+          track("d1.database.create", ...args);
+          const params = args[0] as { account_id: string; name: string };
+          const newDb: MockD1Database = {
+            uuid: nextId("d1"),
+            name: params.name,
+            created_at: new Date().toISOString(),
+          };
+          d1Databases.push(newDb);
+          return newDb;
+        },
+        delete: async (...args: unknown[]) => {
+          track("d1.database.delete", ...args);
+          const databaseId = args[0] as string;
+          d1Databases = d1Databases.filter((db) => db.uuid !== databaseId);
+        },
+      },
+    },
+    r2: {
+      buckets: {
+        create: async (...args: unknown[]) => {
+          track("r2.buckets.create", ...args);
+          const params = args[0] as { account_id: string; name: string };
+          const newBucket: MockR2Bucket = {
+            name: params.name,
+            creation_date: new Date().toISOString(),
+          };
+          r2Buckets.push(newBucket);
+          return newBucket;
+        },
+        delete: async (...args: unknown[]) => {
+          track("r2.buckets.delete", ...args);
+          const bucketName = args[0] as string;
+          r2Buckets = r2Buckets.filter((b) => b.name !== bucketName);
+        },
+      },
+    },
+    kv: {
+      namespaces: {
+        create: async (...args: unknown[]) => {
+          track("kv.namespaces.create", ...args);
+          const params = args[0] as { account_id: string; title: string };
+          const newNs: MockKVNamespace = {
+            id: nextId("kv"),
+            title: params.title,
+          };
+          kvNamespaces.push(newNs);
+          return newNs;
+        },
+        delete: async (...args: unknown[]) => {
+          track("kv.namespaces.delete", ...args);
+          const namespaceId = args[0] as string;
+          kvNamespaces = kvNamespaces.filter((ns) => ns.id !== namespaceId);
+        },
+      },
+    },
   };
 
   return {
@@ -296,6 +376,21 @@ export function createMockClient() {
       redirectRuleset = ruleset;
     },
     getRedirectRuleset: () => redirectRuleset,
+    // D1 database state
+    setDatabases: (dbs: MockD1Database[]) => {
+      d1Databases = dbs;
+    },
+    getDatabases: () => d1Databases,
+    // R2 bucket state
+    setBuckets: (buckets: MockR2Bucket[]) => {
+      r2Buckets = buckets;
+    },
+    getBuckets: () => r2Buckets,
+    // KV namespace state
+    setNamespaces: (namespaces: MockKVNamespace[]) => {
+      kvNamespaces = namespaces;
+    },
+    getNamespaces: () => kvNamespaces,
   };
 }
 
