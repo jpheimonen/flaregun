@@ -33,3 +33,11 @@ export {
   type DeployCommandDeps,
   type DeployCommandResult,
 } from "./command.js";
+export {
+  handleBuild,
+  formatBuildSummary,
+  type BuildCommandDeps,
+  type BuildCommandResult,
+  type ServiceBuildEntry,
+  type BuildStatus,
+} from "./build-command.js";
