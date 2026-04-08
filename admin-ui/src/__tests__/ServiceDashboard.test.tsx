@@ -21,6 +21,9 @@ vi.mock("../api/client", () => ({
   restartService: vi.fn().mockResolvedValue({ success: true }),
   stopService: vi.fn().mockResolvedValue({ success: true }),
   fetchConfig: vi.fn().mockResolvedValue({ success: true, content: "domain: example.com" }),
+  validateConfig: vi.fn().mockResolvedValue({ success: true, errors: [] }),
+  saveConfig: vi.fn().mockResolvedValue({ success: true }),
+  getLogWebSocketUrl: vi.fn().mockReturnValue("ws://localhost/api/logs"),
 }));
 
 const theme = createTheme({ palette: { mode: "dark" } });

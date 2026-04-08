@@ -9,6 +9,8 @@ import type {
   ServiceListResponse,
   ServiceActionResponse,
   ConfigReadResponse,
+  ConfigValidateResponse,
+  ConfigSaveResponse,
 } from "../types";
 
 /** Fetch the list of all services (local + Pages) */
@@ -43,4 +45,30 @@ export async function fetchConfig(): Promise<ConfigReadResponse> {
     throw new Error(`Failed to fetch config: ${res.status} ${res.statusText}`);
   }
   return res.json();
+}
+
+/** Validate YAML config content without saving */
+export async function validateConfig(content: string): Promise<ConfigValidateResponse> {
+  const res = await fetch("/api/config/validate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  return res.json();
+}
+
+/** Save YAML config content (validates, writes, triggers hot-reload) */
+export async function saveConfig(content: string): Promise<ConfigSaveResponse> {
+  const res = await fetch("/api/config/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  return res.json();
+}
+
+/** Build the WebSocket URL for log streaming */
+export function getLogWebSocketUrl(): string {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/api/logs`;
 }

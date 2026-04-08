@@ -54,3 +54,49 @@ export interface ConfigReadResponse {
   content?: string;
   error?: string;
 }
+
+/** Response from POST /api/config/validate */
+export interface ConfigValidateResponse {
+  success: boolean;
+  errors: string[];
+}
+
+/** Hot-reload result embedded in save response */
+export interface HotReloadResult {
+  success: boolean;
+  errors: string[];
+  changes: string[];
+}
+
+/** Response from POST /api/config/save */
+export interface ConfigSaveResponse {
+  success: boolean;
+  errors?: string[];
+  reload?: HotReloadResult;
+}
+
+/** A single log entry from the WebSocket stream */
+export interface LogEntry {
+  timestamp: string;
+  service: string;
+  source: "stdout" | "stderr";
+  line: string;
+}
+
+/** WebSocket message: individual log line */
+export interface LogStreamMessage {
+  type: "log";
+  timestamp: string;
+  service: string;
+  source: "stdout" | "stderr";
+  line: string;
+}
+
+/** WebSocket message: batch of history entries */
+export interface LogHistoryMessage {
+  type: "history";
+  entries: LogStreamMessage[];
+}
+
+/** Union of all WebSocket messages from server */
+export type LogServerMessage = LogStreamMessage | LogHistoryMessage;
