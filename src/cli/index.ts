@@ -4,6 +4,7 @@ import { dispatch } from "./commands.js";
 import { handleDeploy } from "../deploy/command.js";
 import { handleBuild } from "../deploy/build-command.js";
 import { handleUp, handleDown } from "../orchestrate/index.js";
+import { handleSetup } from "../setup/index.js";
 
 /**
  * CLI entry point. Reads process.argv, dispatches to the appropriate
@@ -42,6 +43,12 @@ async function main(): Promise<void> {
     case "build": {
       const buildResult = await handleBuild(result.filters);
       process.exit(buildResult.success ? 0 : 1);
+      break;
+    }
+
+    case "setup": {
+      const setupResult = await handleSetup();
+      process.exit(setupResult.success ? 0 : 1);
       break;
     }
 
