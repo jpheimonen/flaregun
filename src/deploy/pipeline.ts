@@ -346,11 +346,13 @@ export async function deployPipeline(
   projectRoot: string,
   runner: CommandRunner,
   serviceFilter?: string[],
+  /** Binary existence checker — defaults to binaryExists */
+  binaryExistsFn: (name: string) => Promise<boolean> = binaryExists,
 ): Promise<DeployPipelineResult> {
   const summary: DeploySummaryEntry[] = [];
 
   // Prerequisite check: wrangler available
-  const hasWrangler = await binaryExists("wrangler");
+  const hasWrangler = await binaryExistsFn("wrangler");
   if (!hasWrangler) {
     return {
       success: false,

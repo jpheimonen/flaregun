@@ -549,6 +549,9 @@ describe("deployFallbackWorker", () => {
 
 // --- Pipeline orchestrator tests ---
 
+/** Always-true binary check so tests don't require wrangler on PATH */
+const mockBinaryExists = async () => true;
+
 describe("deployPipeline", () => {
   test("deploying with no filter deploys all Pages services", async () => {
     const mockClient = createMockClient();
@@ -571,6 +574,8 @@ describe("deployPipeline", () => {
       TEST_ACCOUNT_ID,
       testRoot,
       runner,
+      undefined,
+      mockBinaryExists,
     );
 
     // Should have deployed blog and docs (Pages) but not api (local)
@@ -604,6 +609,7 @@ describe("deployPipeline", () => {
       testRoot,
       runner,
       ["blog"], // Only deploy blog
+      mockBinaryExists,
     );
 
     const pagesEntries = result.summary.filter((e) => e.type === "pages");
@@ -632,6 +638,7 @@ describe("deployPipeline", () => {
       testRoot,
       runner,
       ["blog"], // Only deploy blog — Worker should still deploy
+      mockBinaryExists,
     );
 
     const workerEntries = result.summary.filter(
@@ -673,6 +680,8 @@ describe("deployPipeline", () => {
       TEST_ACCOUNT_ID,
       testRoot,
       runner,
+      undefined,
+      mockBinaryExists,
     );
 
     expect(result.success).toBe(true);
@@ -711,6 +720,8 @@ describe("deployPipeline", () => {
       TEST_ACCOUNT_ID,
       testRoot,
       runner,
+      undefined,
+      mockBinaryExists,
     );
 
     // Overall should be failure
@@ -744,6 +755,8 @@ describe("deployPipeline", () => {
       TEST_ACCOUNT_ID,
       testRoot,
       runner,
+      undefined,
+      mockBinaryExists,
     );
 
     expect(result.summary.length).toBeGreaterThanOrEqual(2); // At least blog + worker
@@ -781,20 +794,14 @@ describe("deployPipeline", () => {
       TEST_ACCOUNT_ID,
       testRoot,
       runner,
+      undefined,
+      mockBinaryExists,
     );
 
     expect(result.success).toBe(false);
   });
 
   test("checks for wrangler availability before starting deploys", async () => {
-    // This test verifies the pipeline's wrangler check by using a patched
-    // binaryExists. Since we can't easily patch the import, we verify
-    // that the pipeline function exists and has the expected behavior
-    // (it calls binaryExists internally).
-
-    // We can verify the check by looking at the pipeline result when
-    // wrangler is available (normal test flow) vs the wrangler check
-    // in the handleDeploy command handler (tested separately).
     const mockClient = createMockClient();
     const config = makeConfig({
       services: {
@@ -806,19 +813,36 @@ describe("deployPipeline", () => {
 
     const { runner } = createMockRunner();
 
-    // Pipeline should succeed when wrangler is available
-    const result = await deployPipeline(
+    // When wrangler is missing, pipeline should fail immediately
+    const noWrangler = async () => false;
+    const failResult = await deployPipeline(
       config,
       emptyState(),
       mockClient.client as unknown as CloudflareClient,
       TEST_ACCOUNT_ID,
       testRoot,
       runner,
+      undefined,
+      noWrangler,
     );
 
-    // The pipeline itself checks for wrangler - if we got here with results,
-    // the check passed (wrangler is available in the test environment)
-    expect(result.summary.length).toBeGreaterThan(0);
+    expect(failResult.success).toBe(false);
+    expect(failResult.summary[0].error).toContain("wrangler");
+
+    // When wrangler is available, pipeline should proceed
+    const successResult = await deployPipeline(
+      config,
+      emptyState(),
+      mockClient.client as unknown as CloudflareClient,
+      TEST_ACCOUNT_ID,
+      testRoot,
+      runner,
+      undefined,
+      mockBinaryExists,
+    );
+
+    expect(successResult.summary.length).toBeGreaterThan(0);
+    expect(successResult.summary.some((e) => e.type === "pages")).toBe(true);
   });
 
   test("reports error when a filtered service name does not exist in config", async () => {
@@ -841,6 +865,7 @@ describe("deployPipeline", () => {
       testRoot,
       runner,
       ["nonexistent"],
+      mockBinaryExists,
     );
 
     expect(result.success).toBe(false);
@@ -871,6 +896,7 @@ describe("deployPipeline", () => {
       testRoot,
       runner,
       ["api"],
+      mockBinaryExists,
     );
 
     expect(result.success).toBe(false);
