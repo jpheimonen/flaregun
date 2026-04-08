@@ -58,17 +58,6 @@ async function main(): Promise<void> {
       process.exit(destroyResult.success ? 0 : 1);
       break;
     }
-
-    default:
-      // Placeholder handlers — actual implementations come in later steps
-      if (result.filters.length > 0) {
-        console.log(
-          `[${result.command}] Not yet implemented (services: ${result.filters.join(", ")})`,
-        );
-      } else {
-        console.log(`[${result.command}] Not yet implemented`);
-      }
-      process.exit(exitCode);
   }
 }
 

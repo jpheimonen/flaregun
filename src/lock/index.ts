@@ -226,6 +226,17 @@ export function lookupResource(
 }
 
 /**
+ * Ensures a Pages entry exists for the given service, creating one with an
+ * empty project_name if absent. Returns the (possibly new) entry.
+ */
+function ensurePagesEntry(state: LockState, serviceName: string): PagesEntry {
+  if (!state.pages[serviceName]) {
+    state.pages[serviceName] = { project_name: "" };
+  }
+  return state.pages[serviceName];
+}
+
+/**
  * Stores a resource identifier in the in-memory state.
  * The caller is responsible for calling saveLockFile afterwards.
  */
@@ -237,44 +248,19 @@ export function storeResource(
 ): void {
   switch (resourceType) {
     case "pages_project": {
-      if (!state.pages[serviceName]) {
-        state.pages[serviceName] = { project_name: resourceId };
-      } else {
-        state.pages[serviceName].project_name = resourceId;
-      }
+      ensurePagesEntry(state, serviceName).project_name = resourceId;
       break;
     }
     case "d1_database": {
-      if (!state.pages[serviceName]) {
-        state.pages[serviceName] = {
-          project_name: "",
-          d1_database_id: resourceId,
-        };
-      } else {
-        state.pages[serviceName].d1_database_id = resourceId;
-      }
+      ensurePagesEntry(state, serviceName).d1_database_id = resourceId;
       break;
     }
     case "r2_bucket": {
-      if (!state.pages[serviceName]) {
-        state.pages[serviceName] = {
-          project_name: "",
-          r2_bucket_name: resourceId,
-        };
-      } else {
-        state.pages[serviceName].r2_bucket_name = resourceId;
-      }
+      ensurePagesEntry(state, serviceName).r2_bucket_name = resourceId;
       break;
     }
     case "kv_namespace": {
-      if (!state.pages[serviceName]) {
-        state.pages[serviceName] = {
-          project_name: "",
-          kv_namespace_id: resourceId,
-        };
-      } else {
-        state.pages[serviceName].kv_namespace_id = resourceId;
-      }
+      ensurePagesEntry(state, serviceName).kv_namespace_id = resourceId;
       break;
     }
     case "access_app": {

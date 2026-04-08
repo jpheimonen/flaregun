@@ -33,6 +33,18 @@ export interface HotReloadDeps {
   adminPort: number;
 }
 
+/** Mutable context passed through hot-reload operations to collect results */
+interface ReloadContext {
+  client: CloudflareClient;
+  newConfig: FlaregunConfig;
+  lockState: LockState;
+  supervisor: Supervisor;
+  deps: HotReloadDeps;
+  changes: string[];
+  errors: string[];
+  cloudflareModified: boolean;
+}
+
 // --- Hot-Reload Engine ---
 
 /**
@@ -63,6 +75,69 @@ export function createHotReloadEngine(deps: HotReloadDeps): IHotReloadEngine {
   };
 }
 
+// --- Shared Helpers ---
+
+/**
+ * Runs the full Access sync (applications + policies) and records the outcome.
+ *
+ * This is the single point of truth for the "sync Access apps and policies"
+ * pattern that recurs throughout the hot-reload engine. On success, records
+ * a change message and marks Cloudflare as modified. On failure, records
+ * an error message without interrupting other operations.
+ */
+async function syncAccessWithErrorHandling(
+  ctx: ReloadContext,
+  successMessage: string,
+  failurePrefix: string,
+): Promise<void> {
+  try {
+    const managedApps = await syncAccessApplications(
+      ctx.client,
+      ctx.newConfig,
+      ctx.deps.credentials.accountId,
+      ctx.lockState,
+    );
+    await syncAccessPolicies(
+      ctx.client,
+      ctx.newConfig,
+      ctx.deps.credentials.accountId,
+      managedApps,
+    );
+    ctx.cloudflareModified = true;
+    ctx.changes.push(successMessage);
+  } catch (err) {
+    ctx.errors.push(
+      `${failurePrefix}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/**
+ * Pushes updated tunnel ingress configuration and records the outcome.
+ */
+async function syncIngressWithErrorHandling(
+  ctx: ReloadContext,
+  successMessage: string,
+  failurePrefix: string,
+): Promise<void> {
+  try {
+    await syncTunnelIngress(
+      ctx.client,
+      ctx.newConfig,
+      ctx.deps.credentials.accountId,
+      ctx.deps.credentials.tunnelId,
+      ctx.deps.adminPort,
+    );
+    ctx.changes.push(successMessage);
+  } catch (err) {
+    ctx.errors.push(
+      `${failurePrefix}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+// --- Core Logic ---
+
 /**
  * Core hot-reload logic. Computes the diff and applies all necessary changes.
  *
@@ -76,9 +151,16 @@ async function applyHotReload(
   supervisor: Supervisor,
   deps: HotReloadDeps,
 ): Promise<HotReloadResult> {
-  const changes: string[] = [];
-  const errors: string[] = [];
-  let cloudflareModified = false;
+  const ctx: ReloadContext = {
+    client,
+    newConfig,
+    lockState,
+    supervisor,
+    deps,
+    changes: [],
+    errors: [],
+    cloudflareModified: false,
+  };
 
   // 1. Check for domain change — not supported via hot-reload (must be checked first)
   if (oldConfig.domain !== newConfig.domain) {
@@ -106,207 +188,127 @@ async function applyHotReload(
 
   // 4. Process added services
   for (const name of diff.added) {
-    const service = newConfig.services[name];
-
-    // Start local services via the supervisor
-    if (service.type === "local") {
-      try {
-        const svcConfig: SupervisedServiceConfig = {
-          name,
-          command: service.command!,
-          maxRetries: service.max_retries,
-        };
-        await supervisor.startService(svcConfig);
-        changes.push(`Started service "${name}"`);
-      } catch (err) {
-        errors.push(
-          `Failed to start service "${name}": ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-
-    // Create Access app/policy for non-public services
-    if (service.auth !== "public") {
-      try {
-        const managedApps = await syncAccessApplications(
-          client,
-          newConfig,
-          deps.credentials.accountId,
-          lockState,
-        );
-        await syncAccessPolicies(
-          client,
-          newConfig,
-          deps.credentials.accountId,
-          managedApps,
-        );
-        cloudflareModified = true;
-        changes.push(`Created Access application for "${name}"`);
-      } catch (err) {
-        errors.push(
-          `Failed to create Access application for "${name}": ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-
-    // Update tunnel ingress for local services
-    if (service.type === "local") {
-      try {
-        await syncTunnelIngress(
-          client,
-          newConfig,
-          deps.credentials.accountId,
-          deps.credentials.tunnelId,
-          deps.adminPort,
-        );
-        changes.push(`Updated tunnel ingress for added service "${name}"`);
-      } catch (err) {
-        errors.push(
-          `Failed to update tunnel ingress for "${name}": ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
+    await processAddedService(name, ctx);
   }
 
   // 5. Process removed services
   for (const name of diff.removed) {
-    const oldService = oldConfig.services[name];
-
-    // Stop local services
-    if (oldService.type === "local") {
-      try {
-        await supervisor.stopService(name);
-        changes.push(`Stopped service "${name}"`);
-      } catch (err) {
-        errors.push(
-          `Failed to stop service "${name}": ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-
-    // Delete Access app/policy for non-public services
-    if (oldService.auth !== "public") {
-      try {
-        const managedApps = await syncAccessApplications(
-          client,
-          newConfig,
-          deps.credentials.accountId,
-          lockState,
-        );
-        await syncAccessPolicies(
-          client,
-          newConfig,
-          deps.credentials.accountId,
-          managedApps,
-        );
-        cloudflareModified = true;
-        changes.push(`Deleted Access application for "${name}"`);
-      } catch (err) {
-        errors.push(
-          `Failed to delete Access application for "${name}": ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-
-    // Update tunnel ingress for local services (removed service is automatically absent)
-    if (oldService.type === "local") {
-      try {
-        await syncTunnelIngress(
-          client,
-          newConfig,
-          deps.credentials.accountId,
-          deps.credentials.tunnelId,
-          deps.adminPort,
-        );
-        changes.push(`Updated tunnel ingress after removing "${name}"`);
-      } catch (err) {
-        errors.push(
-          `Failed to update tunnel ingress after removing "${name}": ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
+    await processRemovedService(name, oldConfig, ctx);
   }
 
   // 6. Process modified services
   for (const [name, serviceDiff] of diff.modified) {
     const oldService = oldConfig.services[name];
     const newService = newConfig.services[name];
-
-    // Handle runtime field changes
-    await processServiceModification(
-      name,
-      oldService,
-      newService,
-      serviceDiff,
-      client,
-      newConfig,
-      lockState,
-      supervisor,
-      deps,
-      changes,
-      errors,
-      (flag: boolean) => {
-        if (flag) cloudflareModified = true;
-      },
-    );
+    await processServiceModification(name, oldService, newService, serviceDiff, ctx);
   }
 
   // 7. Handle global auth changes
   if (diff.globalAuthChanged) {
-    // Check if identity provider changed (not programmatically actionable)
-    if (oldConfig.auth.provider !== newConfig.auth.provider) {
-      changes.push(
-        `Identity provider changed from "${oldConfig.auth.provider}" to "${newConfig.auth.provider}" — update Cloudflare Access configuration in the portal manually`,
-      );
-    }
-
-    // Check if superusers changed — update all non-public Access policies
-    const oldSuperusers = oldConfig.auth.superusers;
-    const newSuperusers = newConfig.auth.superusers;
-    const superusersChanged =
-      JSON.stringify(oldSuperusers) !== JSON.stringify(newSuperusers);
-
-    if (superusersChanged) {
-      try {
-        const managedApps = await syncAccessApplications(
-          client,
-          newConfig,
-          deps.credentials.accountId,
-          lockState,
-        );
-        await syncAccessPolicies(
-          client,
-          newConfig,
-          deps.credentials.accountId,
-          managedApps,
-        );
-        cloudflareModified = true;
-        changes.push("Updated all Access policies for superuser change");
-      } catch (err) {
-        errors.push(
-          `Failed to update Access policies for superuser change: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
+    await processGlobalAuthChange(oldConfig, newConfig, ctx);
   }
 
   // 8. Save lock file if Cloudflare resources were modified
-  if (cloudflareModified) {
+  if (ctx.cloudflareModified) {
     try {
       deps.saveLock(lockState);
-      changes.push("Saved lock file");
+      ctx.changes.push("Saved lock file");
     } catch (err) {
-      errors.push(
+      ctx.errors.push(
         `Failed to save lock file: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
 
   return {
-    success: errors.length === 0,
-    errors,
-    changes,
+    success: ctx.errors.length === 0,
+    errors: ctx.errors,
+    changes: ctx.changes,
   };
+}
+
+// --- Per-change processors ---
+
+/** Handles a newly added service: start local process, create Access app, update ingress. */
+async function processAddedService(
+  name: string,
+  ctx: ReloadContext,
+): Promise<void> {
+  const service = ctx.newConfig.services[name];
+
+  // Start local services via the supervisor
+  if (service.type === "local") {
+    try {
+      const svcConfig: SupervisedServiceConfig = {
+        name,
+        command: service.command!,
+        maxRetries: service.max_retries,
+      };
+      await ctx.supervisor.startService(svcConfig);
+      ctx.changes.push(`Started service "${name}"`);
+    } catch (err) {
+      ctx.errors.push(
+        `Failed to start service "${name}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  // Create Access app/policy for non-public services
+  if (service.auth !== "public") {
+    await syncAccessWithErrorHandling(
+      ctx,
+      `Created Access application for "${name}"`,
+      `Failed to create Access application for "${name}"`,
+    );
+  }
+
+  // Update tunnel ingress for local services
+  if (service.type === "local") {
+    await syncIngressWithErrorHandling(
+      ctx,
+      `Updated tunnel ingress for added service "${name}"`,
+      `Failed to update tunnel ingress for "${name}"`,
+    );
+  }
+}
+
+/** Handles a removed service: stop local process, delete Access app, update ingress. */
+async function processRemovedService(
+  name: string,
+  oldConfig: FlaregunConfig,
+  ctx: ReloadContext,
+): Promise<void> {
+  const oldService = oldConfig.services[name];
+
+  // Stop local services
+  if (oldService.type === "local") {
+    try {
+      await ctx.supervisor.stopService(name);
+      ctx.changes.push(`Stopped service "${name}"`);
+    } catch (err) {
+      ctx.errors.push(
+        `Failed to stop service "${name}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  // Delete Access app/policy for non-public services
+  if (oldService.auth !== "public") {
+    await syncAccessWithErrorHandling(
+      ctx,
+      `Deleted Access application for "${name}"`,
+      `Failed to delete Access application for "${name}"`,
+    );
+  }
+
+  // Update tunnel ingress for local services (removed service is automatically absent)
+  if (oldService.type === "local") {
+    await syncIngressWithErrorHandling(
+      ctx,
+      `Updated tunnel ingress after removing "${name}"`,
+      `Failed to update tunnel ingress after removing "${name}"`,
+    );
+  }
 }
 
 /**
@@ -319,20 +321,13 @@ async function processServiceModification(
   oldService: FlaregunConfig["services"][string],
   newService: FlaregunConfig["services"][string],
   serviceDiff: ServiceDiff,
-  client: CloudflareClient,
-  newConfig: FlaregunConfig,
-  lockState: LockState,
-  supervisor: Supervisor,
-  deps: HotReloadDeps,
-  changes: string[],
-  errors: string[],
-  setCloudflareModified: (flag: boolean) => void,
+  ctx: ReloadContext,
 ): Promise<void> {
   const runtimeFields = new Set(serviceDiff.runtime);
 
   // Pages-only changes — explicitly skip (no-op)
   if (serviceDiff.pagesOnly.length > 0 && serviceDiff.runtime.length === 0) {
-    changes.push(
+    ctx.changes.push(
       `Service "${name}" has Pages-only changes (${serviceDiff.pagesOnly.join(", ")}) — no runtime action needed`,
     );
     return;
@@ -340,63 +335,47 @@ async function processServiceModification(
 
   // If there are pages-only fields alongside runtime fields, note them
   if (serviceDiff.pagesOnly.length > 0) {
-    changes.push(
+    ctx.changes.push(
       `Service "${name}" has Pages-only changes (${serviceDiff.pagesOnly.join(", ")}) — skipped (runtime changes applied separately)`,
     );
   }
 
-  // Port changed (local service) — restart + update ingress
   const portChanged = runtimeFields.has("port");
-  // Command changed (local service) — restart
   const commandChanged = runtimeFields.has("command");
-  // Auth changed
   const authChanged = runtimeFields.has("auth");
-  // Users changed
   const usersChanged = runtimeFields.has("users");
-  // max_retries changed
   const maxRetriesChanged = runtimeFields.has("max_retries");
 
   // Handle port or command changes — restart the service
   if ((portChanged || commandChanged) && newService.type === "local") {
     try {
-      // Update the supervisor config and restart
       const svcConfig: SupervisedServiceConfig = {
         name,
         command: newService.command!,
         maxRetries: newService.max_retries,
       };
-      // Stop the old instance first, then start with new config
-      await supervisor.stopService(name);
-      await supervisor.startService(svcConfig);
+      await ctx.supervisor.stopService(name);
+      await ctx.supervisor.startService(svcConfig);
       if (portChanged && commandChanged) {
-        changes.push(`Restarted service "${name}" (port and command changed)`);
+        ctx.changes.push(`Restarted service "${name}" (port and command changed)`);
       } else if (portChanged) {
-        changes.push(`Restarted service "${name}" (port changed)`);
+        ctx.changes.push(`Restarted service "${name}" (port changed)`);
       } else {
-        changes.push(`Restarted service "${name}" (command changed)`);
+        ctx.changes.push(`Restarted service "${name}" (command changed)`);
       }
     } catch (err) {
-      errors.push(
+      ctx.errors.push(
         `Failed to restart service "${name}": ${err instanceof Error ? err.message : String(err)}`,
       );
     }
 
     // Update tunnel ingress if port changed
     if (portChanged) {
-      try {
-        await syncTunnelIngress(
-          client,
-          newConfig,
-          deps.credentials.accountId,
-          deps.credentials.tunnelId,
-          deps.adminPort,
-        );
-        changes.push(`Updated tunnel ingress for "${name}" (port changed)`);
-      } catch (err) {
-        errors.push(
-          `Failed to update tunnel ingress for "${name}": ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
+      await syncIngressWithErrorHandling(
+        ctx,
+        `Updated tunnel ingress for "${name}" (port changed)`,
+        `Failed to update tunnel ingress for "${name}"`,
+      );
     }
   }
 
@@ -405,69 +384,61 @@ async function processServiceModification(
     const oldAuth = oldService.auth;
     const newAuth = newService.auth;
 
-    try {
-      const managedApps = await syncAccessApplications(
-        client,
-        newConfig,
-        deps.credentials.accountId,
-        lockState,
-      );
-      await syncAccessPolicies(
-        client,
-        newConfig,
-        deps.credentials.accountId,
-        managedApps,
-      );
-      setCloudflareModified(true);
-
-      if (oldAuth === "public" && newAuth !== "public") {
-        changes.push(
-          `Created Access application for "${name}" (auth changed from public to ${newAuth})`,
-        );
-      } else if (oldAuth !== "public" && newAuth === "public") {
-        changes.push(
-          `Deleted Access application for "${name}" (auth changed from ${oldAuth} to public)`,
-        );
-      } else {
-        changes.push(
-          `Updated Access policy for "${name}" (auth changed from ${oldAuth} to ${newAuth})`,
-        );
-      }
-    } catch (err) {
-      errors.push(
-        `Failed to update Access for "${name}" auth change: ${err instanceof Error ? err.message : String(err)}`,
-      );
+    let changeDescription: string;
+    if (oldAuth === "public" && newAuth !== "public") {
+      changeDescription = `Created Access application for "${name}" (auth changed from public to ${newAuth})`;
+    } else if (oldAuth !== "public" && newAuth === "public") {
+      changeDescription = `Deleted Access application for "${name}" (auth changed from ${oldAuth} to public)`;
+    } else {
+      changeDescription = `Updated Access policy for "${name}" (auth changed from ${oldAuth} to ${newAuth})`;
     }
+
+    await syncAccessWithErrorHandling(
+      ctx,
+      changeDescription,
+      `Failed to update Access for "${name}" auth change`,
+    );
   }
 
   // Handle users list changes (without auth mode change)
   if (usersChanged && !authChanged) {
-    try {
-      const managedApps = await syncAccessApplications(
-        client,
-        newConfig,
-        deps.credentials.accountId,
-        lockState,
-      );
-      await syncAccessPolicies(
-        client,
-        newConfig,
-        deps.credentials.accountId,
-        managedApps,
-      );
-      setCloudflareModified(true);
-      changes.push(`Updated Access policy for "${name}" (users list changed)`);
-    } catch (err) {
-      errors.push(
-        `Failed to update Access policy for "${name}" users change: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    await syncAccessWithErrorHandling(
+      ctx,
+      `Updated Access policy for "${name}" (users list changed)`,
+      `Failed to update Access policy for "${name}" users change`,
+    );
   }
 
   // Handle max_retries changes (no restart needed — new limit takes effect on next crash)
   if (maxRetriesChanged && !portChanged && !commandChanged && newService.type === "local") {
-    changes.push(
+    ctx.changes.push(
       `Updated max_retries for "${name}" to ${newService.max_retries ?? "unlimited"} (takes effect on next crash)`,
+    );
+  }
+}
+
+/** Handles changes to the global auth section (provider and superusers). */
+async function processGlobalAuthChange(
+  oldConfig: FlaregunConfig,
+  newConfig: FlaregunConfig,
+  ctx: ReloadContext,
+): Promise<void> {
+  // Check if identity provider changed (not programmatically actionable)
+  if (oldConfig.auth.provider !== newConfig.auth.provider) {
+    ctx.changes.push(
+      `Identity provider changed from "${oldConfig.auth.provider}" to "${newConfig.auth.provider}" — update Cloudflare Access configuration in the portal manually`,
+    );
+  }
+
+  // Check if superusers changed — update all non-public Access policies
+  const superusersChanged =
+    JSON.stringify(oldConfig.auth.superusers) !== JSON.stringify(newConfig.auth.superusers);
+
+  if (superusersChanged) {
+    await syncAccessWithErrorHandling(
+      ctx,
+      "Updated all Access policies for superuser change",
+      "Failed to update Access policies for superuser change",
     );
   }
 }

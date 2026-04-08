@@ -89,14 +89,9 @@ export async function buildScaffoldCopy(
   }
 
   // Step 3: Copy functions into dist/functions/ (if functions dir exists)
-  const resolvedFunctionsPath = resolve(
-    projectRoot,
-    service.functions ?? "functions",
-  );
-
-  if (existsSync(resolvedFunctionsPath)) {
+  if (existsSync(functionsPath)) {
     const distPath = resolve(projectRoot, service.dist ?? "dist/");
-    copyFunctionsToDistDir(resolvedFunctionsPath, distPath);
+    copyFunctionsToDistDir(functionsPath, distPath);
     result.functionsCopied = true;
   }
 

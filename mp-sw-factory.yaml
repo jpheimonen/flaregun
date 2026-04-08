@@ -1,0 +1,59 @@
+# mp-sw-factory.yaml — Flaregun project configuration
+# Bun-native CLI + React admin UI for Cloudflare infrastructure orchestration
+
+install: |
+  Root (CLI/backend): `bun install`
+  Admin UI: `cd admin-ui && bun install`
+  Both workspaces must be installed separately — there is no top-level workspace config.
+
+testing: |
+  This project has two separate test suites:
+
+  **CLI/Backend tests** (Bun test runner):
+    Run: `bun test`
+    Tests are in `tests/` — covers config parsing, sync engine, deploy pipeline,
+    process supervisor, admin server, orchestration, and the destroy command.
+    Uses mock Cloudflare clients from `tests/helpers/mock-client.ts`.
+    Look for "pass" / "fail" in the output. Bun test exits non-zero on failure.
+
+  **Admin UI tests** (Vitest + React Testing Library):
+    Run: `cd admin-ui && npx vitest run`
+    Tests are in `admin-ui/src/__tests__/` — covers Zustand stores, React components
+    (ConfigEditor, LogViewer, ServiceDashboard, TunnelStatus), and the build output.
+    Look for "Tests passed" or "Tests failed" in the output.
+
+  No E2E test framework is configured (no Playwright or Cypress).
+
+linting: |
+  No dedicated linter (eslint, prettier, etc.) is configured for this project.
+  Type checking serves as the primary static analysis:
+
+  **Root project**: `tsc --noEmit` (uses tsconfig.json, covers src/ and tests/)
+  **Admin UI**: `cd admin-ui && tsc -b` (uses admin-ui/tsconfig.json, covers admin-ui/src/)
+
+  The admin-ui build script (`tsc -b && vite build`) includes type checking as its first step.
+
+logs: |
+  Development logs go to stdout. The process supervisor (`src/process/supervisor.ts`)
+  captures child process logs and streams them via WebSocket to the Admin UI.
+  The LogViewer component in admin-ui displays real-time logs.
+  No file-based logging is configured.
+
+coderabbit: auto
+
+steps:
+  run_lint:
+    # No dedicated linter configured; use TypeScript type checking as the lint gate.
+    # Root tsc checks src/ and tests/; admin-ui tsc -b checks the React frontend.
+    check: "tsc --noEmit && cd admin-ui && tsc -b"
+    context: "tsc --noEmit 2>&1 | tail -50; cd admin-ui && tsc -b 2>&1 | tail -50"
+
+  run_tests:
+    check: "bun test && cd admin-ui && npx vitest run"
+    context: "bun test 2>&1 | tail -80; cd admin-ui && npx vitest run 2>&1 | tail -80"
+
+  check_build:
+    # Admin UI is the only project with a build step (Vite + tsc).
+    # The root CLI runs directly via Bun with no build.
+    check: "cd admin-ui && npm run build"
+    context: "cd admin-ui && npm run build 2>&1 | tail -50"
