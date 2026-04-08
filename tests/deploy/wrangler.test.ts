@@ -45,7 +45,7 @@ describe("pages config: pages_build_output_dir", () => {
     const lockState = emptyState();
     const service = pagesService("blog", "admin_only");
     // Remove dist to test default
-    delete (service as Record<string, unknown>).dist;
+    delete (service as unknown as Record<string, unknown>).dist;
 
     const result = generatePagesConfig("blog", service, "example.com", lockState);
     trackTmpDir(result.tmpDir);

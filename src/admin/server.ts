@@ -71,7 +71,7 @@ const DEFAULT_PREFERRED_PORT = 9100;
 const DEFAULT_MAX_PORT_ATTEMPTS = 10;
 
 export class AdminServer {
-  private server: Server | null = null;
+  private server: Server<WSData> | null = null;
   private deps: AdminServerDeps;
   private port: number = 0;
 
@@ -92,7 +92,7 @@ export class AdminServer {
       const portToTry = preferredPort + attempt;
       try {
         this.server = this.createServer(portToTry);
-        this.port = this.server.port;
+        this.port = this.server.port ?? portToTry;
         return this.port;
       } catch (err) {
         // Port in use — try next
@@ -121,7 +121,7 @@ export class AdminServer {
     return this.port;
   }
 
-  private createServer(port: number): Server {
+  private createServer(port: number): Server<WSData> {
     return Bun.serve({
       port,
       fetch: (req, server) => this.handleRequest(req, server),
@@ -141,14 +141,14 @@ export class AdminServer {
 
   // --- Request Router ---
 
-  private async handleRequest(req: Request, server: Server): Promise<Response> {
+  private async handleRequest(req: Request, server: Server<WSData>): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
     const method = req.method;
 
     // WebSocket upgrade for log streaming
     if (path === "/api/logs" && req.headers.get("upgrade") === "websocket") {
-      const upgraded = server.upgrade<WSData>(req, {
+      const upgraded = server.upgrade(req, {
         data: { subscribedService: null, unsubscribe: null },
       });
       if (upgraded) {

@@ -505,8 +505,8 @@ function diffService(
 
   // Check runtime fields
   for (const field of RUNTIME_FIELDS) {
-    const oldVal = (oldSvc as Record<string, unknown>)[field];
-    const newVal = (newSvc as Record<string, unknown>)[field];
+    const oldVal = (oldSvc as unknown as Record<string, unknown>)[field];
+    const newVal = (newSvc as unknown as Record<string, unknown>)[field];
     if (!deepEqual(oldVal, newVal)) {
       runtime.push(field);
     }
@@ -514,8 +514,8 @@ function diffService(
 
   // Check pages-only fields
   for (const field of PAGES_ONLY_FIELDS) {
-    const oldVal = (oldSvc as Record<string, unknown>)[field];
-    const newVal = (newSvc as Record<string, unknown>)[field];
+    const oldVal = (oldSvc as unknown as Record<string, unknown>)[field];
+    const newVal = (newSvc as unknown as Record<string, unknown>)[field];
     if (!deepEqual(oldVal, newVal)) {
       pagesOnly.push(field);
     }

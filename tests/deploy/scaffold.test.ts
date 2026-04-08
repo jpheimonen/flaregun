@@ -176,7 +176,7 @@ describe("scaffold: default functions path", () => {
   test("when service has no functions field at all, defaults to functions/ relative to project root", () => {
     const service = pagesService("blog", "admin_only", { database: true });
     // Explicitly remove functions field to test the fallback
-    delete (service as Record<string, unknown>).functions;
+    delete (service as unknown as Record<string, unknown>).functions;
 
     const result = scaffoldFunctions(service, testRoot);
 
