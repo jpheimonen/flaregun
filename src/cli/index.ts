@@ -3,6 +3,7 @@
 import { dispatch } from "./commands.js";
 import { handleDeploy } from "../deploy/command.js";
 import { handleBuild } from "../deploy/build-command.js";
+import { handleUp, handleDown } from "../orchestrate/index.js";
 
 /**
  * CLI entry point. Reads process.argv, dispatches to the appropriate
@@ -20,6 +21,18 @@ async function main(): Promise<void> {
 
   // Command dispatch
   switch (result.command) {
+    case "up": {
+      const upResult = await handleUp();
+      process.exit(upResult.success ? 0 : 1);
+      break;
+    }
+
+    case "down": {
+      const downResult = await handleDown();
+      process.exit(downResult.success ? 0 : 1);
+      break;
+    }
+
     case "deploy": {
       const deployResult = await handleDeploy(result.filters);
       process.exit(deployResult.success ? 0 : 1);
