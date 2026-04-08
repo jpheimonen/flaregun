@@ -73,6 +73,22 @@ export interface MockPagesDomain {
   project_name: string;
 }
 
+/** Mock Pages project */
+export interface MockPagesProject {
+  name: string;
+}
+
+/** Mock Worker script */
+export interface MockWorkerScript {
+  name: string;
+}
+
+/** Mock tunnel */
+export interface MockTunnel {
+  id: string;
+  name: string;
+}
+
 // --- Pagination helper ---
 
 /** Creates a paginated async iterable result matching the Cloudflare SDK's pattern. */
@@ -116,6 +132,9 @@ export function createMockClient() {
   let r2Buckets: MockR2Bucket[] = [];
   let kvNamespaces: MockKVNamespace[] = [];
   let pagesDomains: MockPagesDomain[] = [];
+  let pagesProjects: MockPagesProject[] = [];
+  let workerScripts: MockWorkerScript[] = [];
+  let tunnels: MockTunnel[] = [];
 
   const client = {
     zeroTrust: {
@@ -212,6 +231,11 @@ export function createMockClient() {
       },
       tunnels: {
         cloudflared: {
+          delete: async (...args: unknown[]) => {
+            track("tunnels.cloudflared.delete", ...args);
+            const tunnelId = args[0] as string;
+            tunnels = tunnels.filter((t) => t.id !== tunnelId);
+          },
           configurations: {
             update: async (...args: unknown[]) => {
               track("tunnelConfig.update", ...args);
@@ -357,8 +381,22 @@ export function createMockClient() {
         },
       },
     },
+    workers: {
+      scripts: {
+        delete: async (...args: unknown[]) => {
+          track("workers.scripts.delete", ...args);
+          const scriptName = args[0] as string;
+          workerScripts = workerScripts.filter((w) => w.name !== scriptName);
+        },
+      },
+    },
     pages: {
       projects: {
+        delete: async (...args: unknown[]) => {
+          track("pages.projects.delete", ...args);
+          const projectName = args[0] as string;
+          pagesProjects = pagesProjects.filter((p) => p.name !== projectName);
+        },
         domains: {
           get: async (...args: unknown[]) => {
             track("pages.projects.domains.get", ...args);
@@ -444,6 +482,21 @@ export function createMockClient() {
       pagesDomains = domains;
     },
     getPagesDomains: () => pagesDomains,
+    // Pages projects state
+    setPagesProjects: (projects: MockPagesProject[]) => {
+      pagesProjects = projects;
+    },
+    getPagesProjects: () => pagesProjects,
+    // Worker scripts state
+    setWorkerScripts: (scripts: MockWorkerScript[]) => {
+      workerScripts = scripts;
+    },
+    getWorkerScripts: () => workerScripts,
+    // Tunnels state
+    setTunnels: (t: MockTunnel[]) => {
+      tunnels = t;
+    },
+    getTunnels: () => tunnels,
   };
 }
 
