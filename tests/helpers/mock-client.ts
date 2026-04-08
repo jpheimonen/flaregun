@@ -1,0 +1,507 @@
+/**
+ * Mock Cloudflare SDK client for testing sync logic without real API calls.
+ *
+ * Provides call tracking, in-memory state stores, and state manipulation methods.
+ * Supports: Access applications/policies, tunnel configuration, DNS records,
+ * redirect rulesets, D1 databases, R2 buckets, and KV namespaces.
+ */
+
+// --- Mock types ---
+
+/** Mock Access application */
+export interface MockApp {
+  id: string;
+  name: string;
+  domain: string;
+  type: string;
+}
+
+/** Mock Access policy */
+export interface MockPolicy {
+  id: string;
+  name: string;
+  decision: string;
+  include: unknown[];
+}
+
+/** Mock DNS record */
+export interface MockDnsRecord {
+  id: string;
+  name: string;
+  type: string;
+  content: string;
+}
+
+/** Mock redirect rule */
+export interface MockRedirectRule {
+  id?: string;
+  expression?: string;
+  action?: string;
+  description?: string;
+  action_parameters?: unknown;
+}
+
+/** Mock redirect ruleset */
+export interface MockRedirectRuleset {
+  id: string;
+  rules: MockRedirectRule[];
+}
+
+/** Mock D1 database */
+export interface MockD1Database {
+  uuid: string;
+  name: string;
+  created_at: string;
+}
+
+/** Mock R2 bucket */
+export interface MockR2Bucket {
+  name: string;
+  creation_date: string;
+}
+
+/** Mock KV namespace */
+export interface MockKVNamespace {
+  id: string;
+  title: string;
+}
+
+/** Mock Pages project domain */
+export interface MockPagesDomain {
+  id: string;
+  domain: string;
+  project_name: string;
+}
+
+/** Mock Pages project */
+export interface MockPagesProject {
+  name: string;
+}
+
+/** Mock Worker script */
+export interface MockWorkerScript {
+  name: string;
+}
+
+/** Mock tunnel */
+export interface MockTunnel {
+  id: string;
+  name: string;
+}
+
+// --- Pagination helper ---
+
+/** Creates a paginated async iterable result matching the Cloudflare SDK's pattern. */
+export function mockPageResult<T>(items: T[]) {
+  return {
+    [Symbol.asyncIterator]: async function* () {
+      for (const item of items) {
+        yield item;
+      }
+    },
+  };
+}
+
+// --- Mock client factory ---
+
+/** Creates a mock Cloudflare SDK client with call tracking and in-memory state. */
+export function createMockClient() {
+  const calls: Record<string, unknown[][]> = {};
+  let idCounter = 0;
+
+  function track(method: string, ...args: unknown[]) {
+    if (!calls[method]) calls[method] = [];
+    calls[method].push(args);
+  }
+
+  function nextId(prefix: string): string {
+    return `${prefix}-${++idCounter}`;
+  }
+
+  function nextCounter(): number {
+    return ++idCounter;
+  }
+
+  // State stores
+  let apps: MockApp[] = [];
+  let policies: Record<string, MockPolicy[]> = {}; // keyed by app ID
+  let tunnelConfig: unknown = null;
+  let dnsRecords: MockDnsRecord[] = [];
+  let redirectRuleset: MockRedirectRuleset | null = null;
+  let d1Databases: MockD1Database[] = [];
+  let r2Buckets: MockR2Bucket[] = [];
+  let kvNamespaces: MockKVNamespace[] = [];
+  let pagesDomains: MockPagesDomain[] = [];
+  let pagesProjects: MockPagesProject[] = [];
+  let workerScripts: MockWorkerScript[] = [];
+  let tunnels: MockTunnel[] = [];
+
+  const client = {
+    zeroTrust: {
+      access: {
+        applications: {
+          list: (...args: unknown[]) => {
+            track("applications.list", ...args);
+            return mockPageResult(apps);
+          },
+          create: async (...args: unknown[]) => {
+            track("applications.create", ...args);
+            const params = args[0] as {
+              name: string;
+              domain: string;
+              type: string;
+            };
+            const newApp: MockApp = {
+              id: `app-${params.name}-${nextCounter()}`,
+              name: params.name,
+              domain: params.domain,
+              type: params.type,
+            };
+            apps.push(newApp);
+            return newApp;
+          },
+          update: async (...args: unknown[]) => {
+            track("applications.update", ...args);
+            return args[0];
+          },
+          delete: async (...args: unknown[]) => {
+            track("applications.delete", ...args);
+            const appId = args[0] as string;
+            // Remove from in-memory store
+            apps = apps.filter((a) => a.id !== appId);
+            // Cascade: remove associated policies
+            delete policies[appId];
+          },
+          policies: {
+            list: (...args: unknown[]) => {
+              track("policies.list", ...args);
+              const appId = args[0] as string;
+              return mockPageResult(policies[appId] ?? []);
+            },
+            create: async (...args: unknown[]) => {
+              track("policies.create", ...args);
+              const appId = args[0] as string;
+              const params = args[1] as {
+                name: string;
+                decision: string;
+                include: unknown[];
+              };
+              const newPolicy: MockPolicy = {
+                id: `policy-${params.name}-${nextCounter()}`,
+                name: params.name,
+                decision: params.decision,
+                include: params.include,
+              };
+              if (!policies[appId]) policies[appId] = [];
+              policies[appId].push(newPolicy);
+              return newPolicy;
+            },
+            update: async (...args: unknown[]) => {
+              track("policies.update", ...args);
+              const appId = args[0] as string;
+              const policyId = args[1] as string;
+              const params = args[2] as {
+                name: string;
+                decision: string;
+                include: unknown[];
+              };
+              const appPolicies = policies[appId] ?? [];
+              const idx = appPolicies.findIndex((p) => p.id === policyId);
+              if (idx >= 0) {
+                appPolicies[idx] = {
+                  ...appPolicies[idx],
+                  include: params.include,
+                  decision: params.decision,
+                };
+              }
+              return appPolicies[idx];
+            },
+            delete: async (...args: unknown[]) => {
+              track("policies.delete", ...args);
+              const appId = args[0] as string;
+              const policyId = args[1] as string;
+              if (policies[appId]) {
+                policies[appId] = policies[appId].filter(
+                  (p) => p.id !== policyId,
+                );
+              }
+            },
+          },
+        },
+      },
+      tunnels: {
+        cloudflared: {
+          delete: async (...args: unknown[]) => {
+            track("tunnels.cloudflared.delete", ...args);
+            const tunnelId = args[0] as string;
+            tunnels = tunnels.filter((t) => t.id !== tunnelId);
+          },
+          configurations: {
+            update: async (...args: unknown[]) => {
+              track("tunnelConfig.update", ...args);
+              const tunnelId = args[0] as string;
+              const params = args[1] as { config: unknown };
+              tunnelConfig = { tunnelId, config: params.config };
+              return tunnelConfig;
+            },
+          },
+        },
+      },
+    },
+    dns: {
+      records: {
+        list: (...args: unknown[]) => {
+          track("dns.records.list", ...args);
+          return mockPageResult([...dnsRecords]);
+        },
+        create: async (...args: unknown[]) => {
+          track("dns.records.create", ...args);
+          const params = args[0] as {
+            name: string;
+            type: string;
+            content: string;
+          };
+          const newRecord: MockDnsRecord = {
+            id: nextId("dns"),
+            name: params.name,
+            type: params.type,
+            content: params.content,
+          };
+          dnsRecords.push(newRecord);
+          return newRecord;
+        },
+        update: async (...args: unknown[]) => {
+          track("dns.records.update", ...args);
+          const recordId = args[0] as string;
+          const params = args[1] as {
+            name: string;
+            type: string;
+            content: string;
+          };
+          const idx = dnsRecords.findIndex((r) => r.id === recordId);
+          if (idx >= 0) {
+            dnsRecords[idx] = {
+              ...dnsRecords[idx],
+              name: params.name,
+              type: params.type,
+              content: params.content,
+            };
+          }
+          return dnsRecords[idx];
+        },
+        delete: async (...args: unknown[]) => {
+          track("dns.records.delete", ...args);
+          const recordId = args[0] as string;
+          dnsRecords = dnsRecords.filter((r) => r.id !== recordId);
+        },
+      },
+    },
+    rulesets: {
+      phases: {
+        get: async (...args: unknown[]) => {
+          track("rulesets.phases.get", ...args);
+          if (!redirectRuleset) {
+            throw new Error("No ruleset found for phase");
+          }
+          return redirectRuleset;
+        },
+        update: async (...args: unknown[]) => {
+          track("rulesets.phases.update", ...args);
+          const params = args[1] as { rules: MockRedirectRule[] };
+          if (!redirectRuleset) {
+            redirectRuleset = {
+              id: nextId("ruleset"),
+              rules: [],
+            };
+          }
+          // Assign IDs to rules that don't have them
+          redirectRuleset.rules = params.rules.map((rule) => ({
+            ...rule,
+            id: rule.id ?? nextId("rule"),
+          }));
+          return redirectRuleset;
+        },
+      },
+    },
+    d1: {
+      database: {
+        create: async (...args: unknown[]) => {
+          track("d1.database.create", ...args);
+          const params = args[0] as { account_id: string; name: string };
+          const newDb: MockD1Database = {
+            uuid: nextId("d1"),
+            name: params.name,
+            created_at: new Date().toISOString(),
+          };
+          d1Databases.push(newDb);
+          return newDb;
+        },
+        delete: async (...args: unknown[]) => {
+          track("d1.database.delete", ...args);
+          const databaseId = args[0] as string;
+          d1Databases = d1Databases.filter((db) => db.uuid !== databaseId);
+        },
+      },
+    },
+    r2: {
+      buckets: {
+        create: async (...args: unknown[]) => {
+          track("r2.buckets.create", ...args);
+          const params = args[0] as { account_id: string; name: string };
+          const newBucket: MockR2Bucket = {
+            name: params.name,
+            creation_date: new Date().toISOString(),
+          };
+          r2Buckets.push(newBucket);
+          return newBucket;
+        },
+        delete: async (...args: unknown[]) => {
+          track("r2.buckets.delete", ...args);
+          const bucketName = args[0] as string;
+          r2Buckets = r2Buckets.filter((b) => b.name !== bucketName);
+        },
+      },
+    },
+    kv: {
+      namespaces: {
+        create: async (...args: unknown[]) => {
+          track("kv.namespaces.create", ...args);
+          const params = args[0] as { account_id: string; title: string };
+          const newNs: MockKVNamespace = {
+            id: nextId("kv"),
+            title: params.title,
+          };
+          kvNamespaces.push(newNs);
+          return newNs;
+        },
+        delete: async (...args: unknown[]) => {
+          track("kv.namespaces.delete", ...args);
+          const namespaceId = args[0] as string;
+          kvNamespaces = kvNamespaces.filter((ns) => ns.id !== namespaceId);
+        },
+      },
+    },
+    workers: {
+      scripts: {
+        delete: async (...args: unknown[]) => {
+          track("workers.scripts.delete", ...args);
+          const scriptName = args[0] as string;
+          workerScripts = workerScripts.filter((w) => w.name !== scriptName);
+        },
+      },
+    },
+    pages: {
+      projects: {
+        delete: async (...args: unknown[]) => {
+          track("pages.projects.delete", ...args);
+          const projectName = args[0] as string;
+          pagesProjects = pagesProjects.filter((p) => p.name !== projectName);
+        },
+        domains: {
+          get: async (...args: unknown[]) => {
+            track("pages.projects.domains.get", ...args);
+            const params = args[0] as {
+              project_name: string;
+              domain_name: string;
+              account_id: string;
+            };
+            const found = pagesDomains.find(
+              (d) =>
+                d.project_name === params.project_name &&
+                d.domain === params.domain_name,
+            );
+            if (!found) {
+              throw new Error(
+                `Custom domain ${params.domain_name} not found on project ${params.project_name}`,
+              );
+            }
+            return found;
+          },
+          create: async (...args: unknown[]) => {
+            track("pages.projects.domains.create", ...args);
+            const params = args[0] as {
+              project_name: string;
+              account_id: string;
+              body: { name: string };
+            };
+            const newDomain: MockPagesDomain = {
+              id: nextId("pages-domain"),
+              domain: params.body.name,
+              project_name: params.project_name,
+            };
+            pagesDomains.push(newDomain);
+            return newDomain;
+          },
+        },
+      },
+    },
+  };
+
+  return {
+    client,
+    calls,
+    // State manipulation for test setup
+    setApps: (a: MockApp[]) => {
+      apps = a;
+    },
+    getApps: () => apps,
+    setPolicies: (p: Record<string, MockPolicy[]>) => {
+      policies = p;
+    },
+    getPolicies: () => policies,
+    getCalls: (method: string) => calls[method] ?? [],
+    // Tunnel state
+    getTunnelConfig: () => tunnelConfig,
+    // DNS state
+    setDnsRecords: (records: MockDnsRecord[]) => {
+      dnsRecords = records;
+    },
+    getDnsRecords: () => dnsRecords,
+    // Redirect ruleset state
+    setRedirectRuleset: (ruleset: MockRedirectRuleset | null) => {
+      redirectRuleset = ruleset;
+    },
+    getRedirectRuleset: () => redirectRuleset,
+    // D1 database state
+    setDatabases: (dbs: MockD1Database[]) => {
+      d1Databases = dbs;
+    },
+    getDatabases: () => d1Databases,
+    // R2 bucket state
+    setBuckets: (buckets: MockR2Bucket[]) => {
+      r2Buckets = buckets;
+    },
+    getBuckets: () => r2Buckets,
+    // KV namespace state
+    setNamespaces: (namespaces: MockKVNamespace[]) => {
+      kvNamespaces = namespaces;
+    },
+    getNamespaces: () => kvNamespaces,
+    // Pages project domains state
+    setPagesDomains: (domains: MockPagesDomain[]) => {
+      pagesDomains = domains;
+    },
+    getPagesDomains: () => pagesDomains,
+    // Pages projects state
+    setPagesProjects: (projects: MockPagesProject[]) => {
+      pagesProjects = projects;
+    },
+    getPagesProjects: () => pagesProjects,
+    // Worker scripts state
+    setWorkerScripts: (scripts: MockWorkerScript[]) => {
+      workerScripts = scripts;
+    },
+    getWorkerScripts: () => workerScripts,
+    // Tunnels state
+    setTunnels: (t: MockTunnel[]) => {
+      tunnels = t;
+    },
+    getTunnels: () => tunnels,
+  };
+}
+
+/** Type for the mock client instance returned by createMockClient */
+export type MockClientInstance = ReturnType<typeof createMockClient>;
+
+/** Type for the mock client's "client" property (the SDK substitute) */
+export type MockSDKClient = MockClientInstance["client"];
