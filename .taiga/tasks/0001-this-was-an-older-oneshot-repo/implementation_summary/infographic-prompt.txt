@@ -1,0 +1,9 @@
+Generated with the native image_gen tool. Final image: tunnel-flow.png.
+
+Use case: infographic-diagram
+Asset type: release pull request explanatory infographic, landscape, readable at 1000 pixels wide.
+Primary request: Explain the actual Flaregun change as an elegant cutaway of a tunnel being assembled from one terminal command. A cream paper background, charcoal ink, warm orange tunnel arch, small blue browser window, restrained editorial technical illustration, crisp readable typography, generous space. No metrics, tests, commits, file lists, fabricated UI screenshots or marketing claims.
+Composition: Across the upper middle, a bold terminal strip with exact text "flaregun expose 3000". Below it draw an orange conduit connecting a small localhost socket labelled "localhost:3000" on the left to a domain endpoint labelled "https://3000.example.com" on the right. At the domain end a simple gate labelled "Login required by default"; below that small text "--public opens access".
+Below the conduit, show two assembly mechanisms feeding into it: on the left a browser window labelled "Your signed-in browser" with a single text caption "Create the first API token"; on the right a compact set of four labelled mechanical parts: "Zero Trust", "Tunnel", "DNS", "Access" with caption "Provisioned through the API". A small human hand symbol near browser with text "Enable debugging · Allow · Log in if needed". Small unobtrusive footer: "Manual fallback: --no-browser" and "Plan or billing choices stay with you".
+Title exactly "A local port, with a way out".
+Keep the distinction clear: browser automates token-page clicks, API provisions resources, the person approves browser connection and handles any required plan choices. Do not imply that localhost starts its own app, that real Cloudflare has been tested, or that the first run is zero-click. Render all exact text correctly. Do not add any other text.

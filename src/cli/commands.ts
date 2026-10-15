@@ -5,16 +5,19 @@ export interface CommandDef {
   description: string;
   /** Whether this command accepts trailing service name filters. */
   acceptsFilters: boolean;
+  /** Help section the command is listed under. */
+  group: "tunnels" | "sites";
 }
 
 /** All recognized commands in display order. */
 export const COMMANDS: CommandDef[] = [
-  { name: "up", description: "Start tunnels, services, and admin UI", acceptsFilters: false },
-  { name: "down", description: "Stop all running services and tunnels", acceptsFilters: false },
-  { name: "deploy", description: "Sync config and deploy services to Cloudflare", acceptsFilters: true },
-  { name: "build", description: "Build services locally", acceptsFilters: true },
-  { name: "setup", description: "Interactive guided setup wizard", acceptsFilters: false },
-  { name: "destroy", description: "Tear down all Cloudflare resources", acceptsFilters: false },
+  { name: "setup", description: "Connect flaregun to Cloudflare (clicks through the dashboard in your browser)", acceptsFilters: false, group: "tunnels" },
+  { name: "expose", description: "Put a local port online: expose <port> [subdomain] [--public]", acceptsFilters: false, group: "tunnels" },
+  { name: "up", description: "Start the tunnel, your services and the admin UI from flaregun.yml", acceptsFilters: false, group: "tunnels" },
+  { name: "down", description: "Stop a running flaregun up", acceptsFilters: false, group: "tunnels" },
+  { name: "deploy", description: "Build and deploy Pages sites and the fallback Worker", acceptsFilters: true, group: "sites" },
+  { name: "build", description: "Build services locally", acceptsFilters: true, group: "sites" },
+  { name: "destroy", description: "Delete everything flaregun created in Cloudflare", acceptsFilters: false, group: "sites" },
 ];
 
 /** Map of command name → definition for fast lookup. */
@@ -26,6 +29,8 @@ export const COMMAND_MAP = new Map<string, CommandDef>(
 export interface DispatchResult {
   command: string;
   filters: string[];
+  /** Everything after the command name, for commands with their own arguments. */
+  args: string[];
 }
 
 /**
@@ -45,7 +50,7 @@ export function dispatch(
   stderr: (msg: string) => void = console.error,
 ): { result: DispatchResult | null; exitCode: number } {
   // No arguments or help flag → show help
-  if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
+  if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
     printHelp(stdout);
     return { result: null, exitCode: 0 };
   }
@@ -62,20 +67,28 @@ export function dispatch(
   const filters = def.acceptsFilters ? args.slice(1) : [];
 
   return {
-    result: { command: def.name, filters },
+    result: { command: def.name, filters, args: args.slice(1) },
     exitCode: 0,
   };
 }
 
 /** Prints the help text listing all available commands. */
 export function printHelp(out: (msg: string) => void): void {
-  out("flaregun — Manage your Cloudflare stack from a single config file\n");
-  out("Usage: flaregun <command> [options]\n");
-  out("Commands:");
-  for (const cmd of COMMANDS) {
+  out("flaregun — Cloudflare Tunnels for your local ports, with Zero Trust login in front\n");
+  out("Quick start:");
+  out("  flaregun expose 3000                 https://3000.<your-domain>, login required");
+  out("  flaregun expose 8080 grafana         https://grafana.<your-domain>, login required");
+  out("  flaregun expose 5173 demo --public   https://demo.<your-domain>, open to anyone\n");
+  out("Tunnels:");
+  for (const cmd of COMMANDS.filter((c) => c.group === "tunnels")) {
+    out(`  ${cmd.name.padEnd(10)} ${cmd.description}`);
+  }
+  out("\nSites and cleanup:");
+  for (const cmd of COMMANDS.filter((c) => c.group === "sites")) {
     out(`  ${cmd.name.padEnd(10)} ${cmd.description}`);
   }
   out("");
   out("Options:");
-  out("  --help, -h   Show this help text");
+  out("  --no-browser   setup, expose: do the Cloudflare dashboard clicks yourself");
+  out("  --help, -h     Show this help text");
 }

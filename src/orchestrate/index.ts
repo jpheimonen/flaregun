@@ -23,6 +23,8 @@ import type { CloudflareCredentials } from "../env/index.js";
 import { loadAndValidateEnv } from "../env/index.js";
 import { loadLockFile, saveLockFile, type LockState } from "../lock/index.js";
 import { binaryExists } from "../process/index.js";
+import { findCloudflared, installCloudflared, INSTALL_DOCS, LOCAL_BIN_DIR } from "../tunnel/cloudflared.js";
+import { createConsoleIO } from "../setup/io.js";
 import { Supervisor, type SupervisedServiceConfig } from "../process/supervisor.js";
 import { AdminServer } from "../admin/server.js";
 import type { AdminServerDeps, PagesServiceInfo } from "../admin/types.js";
@@ -53,6 +55,11 @@ export interface UpCommandDeps {
   createClientFn?: (credentials: CloudflareCredentials) => CloudflareClient;
   /** Binary existence checker — defaults to binaryExists */
   binaryExistsFn?: (name: string) => Promise<boolean>;
+  /**
+   * Returns the cloudflared command, offering to download it when missing.
+   * Defaults to finding it with binaryExistsFn and asking on the terminal.
+   */
+  ensureCloudflaredFn?: () => Promise<string | null>;
   /** Full sync engine — defaults to syncFull */
   syncFn?: typeof syncFull;
   /** Tunnel ingress sync — defaults to syncTunnelIngress (from ingress module) */
@@ -71,8 +78,8 @@ export interface UpCommandDeps {
   createHotReloadEngineFn?: typeof createHotReloadEngine;
   /** Tunnel spawner — defaults to spawning cloudflared */
   spawnTunnelFn?: (token: string) => Subprocess;
-  /** PID file writer — defaults to atomic write */
-  writePidFileFn?: (pidPath: string, pid: number) => void;
+  /** PID file writer — defaults to atomic write. Also records the admin port. */
+  writePidFileFn?: (pidPath: string, pid: number, adminPort?: number) => void;
   /** PID file deleter — defaults to deletePidFile */
   deletePidFileFn?: (pidPath: string) => void;
   /** Register signal handler — defaults to process.on */
@@ -110,11 +117,20 @@ export interface DownCommandDeps {
 /**
  * Writes a PID file atomically (write to temp file, then rename).
  * This prevents `down` from reading a partially written file.
+ * The admin port goes on the second line so `flaregun expose` can reach a running `up`.
  */
-export function writePidFile(pidPath: string, pid: number): void {
+export function writePidFile(pidPath: string, pid: number, adminPort?: number): void {
   const tmpPath = `${pidPath}.tmp.${Date.now()}`;
-  writeFileSync(tmpPath, String(pid), "utf-8");
+  const content = adminPort ? `${pid}\n${adminPort}\n` : String(pid);
+  writeFileSync(tmpPath, content, "utf-8");
   renameSync(tmpPath, pidPath);
+}
+
+/** Reads the admin port from the PID file of a running `up`, or null. */
+export function readAdminPort(pidPath: string): number | null {
+  if (!existsSync(pidPath)) return null;
+  const port = parseInt(readFileSync(pidPath, "utf-8").split("\n")[1] ?? "", 10);
+  return Number.isInteger(port) && port > 0 ? port : null;
 }
 
 /**
@@ -168,11 +184,39 @@ export function isProcessRunning(pid: number): boolean {
 /**
  * Default tunnel spawner: runs `cloudflared tunnel run --token <token>`.
  */
-function defaultSpawnTunnel(token: string): Subprocess {
-  return spawn(["cloudflared", "tunnel", "run", "--token", token], {
-    stdout: "inherit",
-    stderr: "inherit",
-  });
+function spawnTunnelWith(cloudflared: string): (token: string) => Subprocess {
+  return (token) =>
+    spawn([cloudflared, "tunnel", "--no-autoupdate", "run", "--token", token], {
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+}
+
+/**
+ * Finds cloudflared; when it's missing and someone is at the terminal, offers
+ * to download it.
+ */
+async function ensureCloudflaredInteractively(
+  binaryExistsFn: (name: string) => Promise<boolean>,
+  stdout: (msg: string) => void,
+): Promise<string | null> {
+  const found = await findCloudflared(binaryExistsFn);
+  if (found || !process.stdin.isTTY) return found;
+
+  const io = createConsoleIO();
+  try {
+    const yes = await io.confirm(
+      `cloudflared isn't installed. Download it into ${LOCAL_BIN_DIR}?`,
+      true,
+    );
+    if (!yes) return null;
+    stdout("Downloading cloudflared…");
+    const path = await installCloudflared();
+    stdout(`✓ cloudflared installed at ${path}`);
+    return path;
+  } finally {
+    io.close();
+  }
 }
 
 // --- Startup Summary ---
@@ -186,42 +230,36 @@ function printStartupSummary(
   adminPort: number,
   stdout: (msg: string) => void,
 ): void {
-  stdout("\n========================================");
-  stdout("  Flaregun — Up Summary");
-  stdout("========================================\n");
-
   const states = supervisor.getAllServiceStates();
+  const services = Object.entries(config.services);
 
-  // Local services
-  const localServices = Object.entries(config.services).filter(
-    ([, s]) => s.type === "local",
-  );
-  if (localServices.length > 0) {
-    stdout("  Local services:");
-    for (const [name, service] of localServices) {
-      const info = states.get(name);
-      const state = info?.state ?? "unknown";
-      const url = `https://${service.subdomain}.${config.domain}`;
-      stdout(`    ${state === "running" ? "✓" : "○"} ${name} [${state}] — ${url}`);
+  stdout("");
+  stdout(`  flaregun is up on ${config.domain}`);
+  stdout("");
+
+  for (const [name, service] of services) {
+    const url = `https://${service.subdomain}.${config.domain}`;
+    const access = service.auth === "public" ? "public" : "login required";
+    if (service.type === "pages") {
+      stdout(`  ${url}  ←  Pages project "${name}" (${access})`);
+    } else if (!service.command) {
+      stdout(`  ${url}  ←  localhost:${service.port} (${access})`);
+    } else {
+      const state = states.get(name)?.state ?? "starting";
+      stdout(`  ${url}  ←  ${name} on localhost:${service.port}, ${state} (${access})`);
     }
   }
-
-  // Pages services
-  const pagesServices = Object.entries(config.services).filter(
-    ([, s]) => s.type === "pages",
-  );
-  if (pagesServices.length > 0) {
-    stdout("\n  Pages services:");
-    for (const [name, service] of pagesServices) {
-      const url = `https://${service.subdomain}.${config.domain}`;
-      stdout(`    ○ ${name} [deployed via Pages] — ${url}`);
-    }
+  if (services.length === 0) {
+    stdout("  No services yet. Expose one with: flaregun expose <port>");
   }
 
-  stdout(`\n  Admin UI: https://admin.${config.domain}`);
-  stdout(`    (local: http://localhost:${adminPort})`);
-  stdout("\n  Cloudflare Tunnel: active");
-  stdout("========================================\n");
+  stdout(`  https://admin.${config.domain}  ←  admin UI (local: http://localhost:${adminPort})`);
+  stdout("");
+  stdout("  Press Ctrl+C to stop.");
+  if (config.auth.provider === "onetimepin") {
+    stdout("  Protected pages ask for your email and send you a one-time code.");
+  }
+  stdout("");
 }
 
 // --- Up Command Handler ---
@@ -255,12 +293,13 @@ export async function handleUp(
     saveLockFn: saveLockFileFn = saveLockFile,
     createClientFn = createClient,
     binaryExistsFn = binaryExists,
+    ensureCloudflaredFn,
     syncFn = syncFull,
     syncIngressFn = syncTunnelIngress,
     createSupervisorFn = () => new Supervisor(),
     createAdminServerFn = (adminDeps: AdminServerDeps) => new AdminServer(adminDeps),
     createHotReloadEngineFn = createHotReloadEngine,
-    spawnTunnelFn = defaultSpawnTunnel,
+    spawnTunnelFn: spawnTunnelOverride,
     writePidFileFn = writePidFile,
     deletePidFileFn = deletePidFile,
     onSignalFn = (signal: string, handler: () => void) => {
@@ -310,14 +349,17 @@ export async function handleUp(
   }
 
   // --- Step 4: Check prerequisites ---
-  const hasCloudflared = await binaryExistsFn("cloudflared");
-  if (!hasCloudflared) {
+  const cloudflared = ensureCloudflaredFn
+    ? await ensureCloudflaredFn()
+    : await ensureCloudflaredInteractively(binaryExistsFn, stdout);
+  if (!cloudflared) {
     const msg =
       "cloudflared is not installed or not found on PATH.\n" +
-      "Install it from: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/";
+      `Install it from: ${INSTALL_DOCS}`;
     stderr(msg);
     return { success: false, error: msg };
   }
+  const spawnTunnelFn = spawnTunnelOverride ?? spawnTunnelWith(cloudflared);
 
   // --- Step 5: Initialize SDK client ---
   const client = createClientFn(credentials);
@@ -414,8 +456,9 @@ export async function handleUp(
     ([, s]) => s.type === "local",
   );
 
-  stdout("Starting local services...");
-  for (const [name, service] of localServices) {
+  const managedServices = localServices.filter(([, s]) => s.command);
+  if (managedServices.length > 0) stdout("Starting local services...");
+  for (const [name, service] of managedServices) {
     const svcConfig: SupervisedServiceConfig = {
       name,
       command: service.command!,
@@ -472,7 +515,7 @@ export async function handleUp(
 
   // --- Step 12: Write PID file ---
   try {
-    writePidFileFn(pidPath, getProcessPidFn());
+    writePidFileFn(pidPath, getProcessPidFn(), adminPort);
   } catch (err) {
     stderr(
       `Warning: Failed to write PID file: ${err instanceof Error ? err.message : String(err)}`,

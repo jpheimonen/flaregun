@@ -131,6 +131,40 @@ describe("config parsing", () => {
     expect(api.auth).toBe("admin_only"); // default
   });
 
+  test("a local service without a command just tunnels to its port", () => {
+    const config = parseConfig(`
+domain: example.com
+auth:
+  provider: onetimepin
+  superusers: [admin@example.com]
+services:
+  grafana:
+    subdomain: grafana
+    port: 3000
+`);
+    expect(config.services.grafana).toMatchObject({ type: "local", port: 3000, auth: "admin_only" });
+    expect(config.services.grafana.command).toBeUndefined();
+  });
+
+  test("an empty command or a missing port is still an error", () => {
+    const errors = expectValidationErrors(`
+domain: example.com
+auth:
+  provider: onetimepin
+  superusers: [admin@example.com]
+services:
+  a:
+    subdomain: a
+    port: 3000
+    command: ""
+  b:
+    subdomain: b
+    command: node b.js
+`);
+    expect(errors).toContain('Service "a" has an empty "command"');
+    expect(errors).toContain('Service "b" is missing required field "port"');
+  });
+
   test("multi-service config with both Pages and local services parses correctly", () => {
     const config = parseConfig(MULTI_SERVICE_YAML);
 

@@ -289,10 +289,8 @@ describe("handleUp: startup sequence", () => {
   test("a missing cloudflared binary aborts startup with installation instructions", async () => {
     const tracker = createTracker();
     const deps = successDeps(tracker, {
-      binaryExistsFn: async () => {
-        tracker.calls.push("binaryExists");
-        return false;
-      },
+      // Not on PATH, no downloaded copy, and the download was declined.
+      ensureCloudflaredFn: async () => null,
     });
 
     const result = await handleUp(undefined, deps);
@@ -402,10 +400,10 @@ describe("handleUp: startup sequence", () => {
 
     // Should contain summary markers
     const summaryOutput = tracker.output.join("\n");
-    expect(summaryOutput).toContain("Flaregun");
-    expect(summaryOutput).toContain("Summary");
-    expect(summaryOutput).toContain("admin");
-    expect(summaryOutput).toContain("Tunnel");
+    expect(summaryOutput).toContain("flaregun is up on example.com");
+    expect(summaryOutput).toContain("https://api.example.com  ←  api on localhost:3000");
+    expect(summaryOutput).toContain("https://blog.example.com  ←  Pages project");
+    expect(summaryOutput).toContain("https://admin.example.com  ←  admin UI (local: http://localhost:9100)");
   });
 });
 

@@ -125,6 +125,10 @@ function inferServiceType(
   return null;
 }
 
+function hasCommandField(svc: Record<string, unknown>): boolean {
+  return "command" in svc && svc.command !== undefined;
+}
+
 /** Validates individual service entries, checking required fields and uniqueness constraints. */
 function validateServiceEntries(
   rawServices: Record<string, unknown>,
@@ -169,9 +173,10 @@ function validateServiceEntries(
     const serviceType = inferServiceType(name, svc, errors);
 
     if (serviceType === "local") {
-      // Local services require command and port
-      if (!svc.command || typeof svc.command !== "string") {
-        errors.push(`Service "${name}" is missing required field "command"`);
+      // Local services require a port. The command is optional: without one,
+      // flaregun only tunnels to a port that something else already serves.
+      if (hasCommandField(svc) && (!svc.command || typeof svc.command !== "string")) {
+        errors.push(`Service "${name}" has an empty "command"`);
       }
       if (svc.port === undefined || svc.port === null || typeof svc.port !== "number") {
         errors.push(`Service "${name}" is missing required field "port"`);

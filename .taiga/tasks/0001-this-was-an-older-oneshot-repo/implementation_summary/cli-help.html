@@ -1,0 +1,22 @@
+<!doctype html><html><head><meta charset="utf-8"><title>flaregun CLI help</title><style>html,body{margin:0;background:#15171b;color:#eceff4}body{padding:40px}pre{margin:0;font:18px/1.6 ui-monospace,"DejaVu Sans Mono",monospace;white-space:pre}</style></head><body><pre>flaregun — Cloudflare Tunnels for your local ports, with Zero Trust login in front
+
+Quick start:
+  flaregun expose 3000                 https://3000.&lt;your-domain&gt;, login required
+  flaregun expose 8080 grafana         https://grafana.&lt;your-domain&gt;, login required
+  flaregun expose 5173 demo --public   https://demo.&lt;your-domain&gt;, open to anyone
+
+Tunnels:
+  setup      Connect flaregun to Cloudflare (clicks through the dashboard in your browser)
+  expose     Put a local port online: expose &lt;port&gt; [subdomain] [--public]
+  up         Start the tunnel, your services and the admin UI from flaregun.yml
+  down       Stop a running flaregun up
+
+Sites and cleanup:
+  deploy     Build and deploy Pages sites and the fallback Worker
+  build      Build services locally
+  destroy    Delete everything flaregun created in Cloudflare
+
+Options:
+  --no-browser   setup, expose: do the Cloudflare dashboard clicks yourself
+  --help, -h     Show this help text
+</pre></body></html>

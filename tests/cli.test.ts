@@ -34,6 +34,13 @@ describe("CLI dispatcher", () => {
       expect(stdout).toContain("flaregun");
     });
 
+    test("a command followed by --help displays help text", () => {
+      const { result, exitCode, stdout } = captureDispatch(["expose", "--help"]);
+      expect(result).toBeNull();
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("expose");
+    });
+
     test("no arguments displays help text", () => {
       const { result, exitCode, stdout } = captureDispatch([]);
       expect(result).toBeNull();

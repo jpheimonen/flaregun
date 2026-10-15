@@ -726,8 +726,9 @@ describe("WebSocket log streaming", () => {
           ws.send(JSON.stringify({ type: "subscribe", service: "svc-b" }));
         }
 
-        // After receiving second history, we're done
-        if (messages.length === 2) {
+        // After receiving the second history, we're done. The echo services
+        // restart and log again, so live "log" messages may arrive in between.
+        if (messages.filter((m) => m.type === "history").length === 2) {
           resolve();
         }
       };
@@ -736,10 +737,13 @@ describe("WebSocket log streaming", () => {
 
     ws.close();
 
-    // Should have received two history messages
-    expect(messages.length).toBeGreaterThanOrEqual(2);
+    // Should have received a history for each subscription, svc-a first
+    const histories = messages.filter((m) => m.type === "history");
     expect(messages[0].type).toBe("history");
-    expect(messages[1].type).toBe("history");
+    expect(histories).toHaveLength(2);
+    expect(histories[0].entries.map((e: any) => e.service)).toContain("svc-a");
+    expect(histories[1].entries.map((e: any) => e.service)).toContain("svc-b");
+    expect(histories[1].entries.map((e: any) => e.service)).not.toContain("svc-a");
   });
 
   test("real-time log delivery via WebSocket", async () => {

@@ -236,8 +236,8 @@ async function processAddedService(
 ): Promise<void> {
   const service = ctx.newConfig.services[name];
 
-  // Start local services via the supervisor
-  if (service.type === "local") {
+  // Start local services via the supervisor (port-only services run elsewhere)
+  if (service.type === "local" && service.command) {
     try {
       const svcConfig: SupervisedServiceConfig = {
         name,
@@ -349,14 +349,21 @@ async function processServiceModification(
   // Handle port or command changes — restart the service
   if ((portChanged || commandChanged) && newService.type === "local") {
     try {
-      const svcConfig: SupervisedServiceConfig = {
-        name,
-        command: newService.command!,
-        maxRetries: newService.max_retries,
-      };
       await ctx.supervisor.stopService(name);
-      await ctx.supervisor.startService(svcConfig);
-      if (portChanged && commandChanged) {
+      if (newService.command) {
+        await ctx.supervisor.startService({
+          name,
+          command: newService.command,
+          maxRetries: newService.max_retries,
+        });
+      }
+      if (!newService.command) {
+        ctx.changes.push(
+          commandChanged
+            ? `Stopped service "${name}" (it no longer has a command)`
+            : `Service "${name}" now points at port ${newService.port}`,
+        );
+      } else if (portChanged && commandChanged) {
         ctx.changes.push(`Restarted service "${name}" (port and command changed)`);
       } else if (portChanged) {
         ctx.changes.push(`Restarted service "${name}" (port changed)`);
