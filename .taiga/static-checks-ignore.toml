@@ -1,0 +1,135 @@
+# Security scanner findings this repository treats as false positives.
+# `taiga static-checks` skips them. See docs/static-checks.md in Taiga.
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS173237"
+id = "c0e073150e8f"
+location = "tests/browser/dashboard-chrome.test.ts:61"
+reason = "Fixed fake token used only by the local fake dashboard in tests; not a real Cloudflare credential."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS173237"
+id = "3c2e9920a763"
+location = "tests/browser/fake-dashboard.ts:9"
+reason = "Fixed fake token used only by the local fake dashboard in tests; not a real Cloudflare credential."
+
+[[ignore]]
+scanner = "gitleaks"
+rule = "generic-api-key"
+id = "41afd6bed329"
+location = "tests/browser/fake-dashboard.ts:9"
+reason = "Fixed fake token used only by the local fake dashboard in tests; not a real Cloudflare credential."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS172411"
+id = "9815abf2cc6e"
+location = "src/browser/cdp.ts:39"
+reason = "cdp.ts:39 setTimeout uses a fixed connection timeout set by flaregun's code, not untrusted input."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS172411"
+id = "8f0868cdc506"
+location = "tests/admin.test.ts:690"
+reason = "Test-only setTimeout calls with constant delays used to wait for test fixtures."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS172411"
+id = "d0fdf42b9a9c"
+location = "tests/admin.test.ts:735"
+reason = "Test-only setTimeout calls with constant delays used to wait for test fixtures."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS172411"
+id = "a3f49dc52bc5"
+location = "tests/admin.test.ts:780"
+reason = "Test-only setTimeout calls with constant delays used to wait for test fixtures."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS172411"
+id = "11f67fda26b2"
+location = "tests/browser/fake-dashboard.ts:50"
+reason = "Test-only setTimeout calls with constant delays used to wait for test fixtures."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS172411"
+id = "6c3bb8241b15"
+location = "tests/browser/fake-dashboard.ts:56"
+reason = "Test-only setTimeout calls with constant delays used to wait for test fixtures."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS172411"
+id = "499925759651"
+location = "tests/orchestrate.test.ts:967"
+reason = "Test-only setTimeout calls with constant delays used to wait for test fixtures."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS172411"
+id = "7eff177e1b9b"
+location = "tests/orchestrate.test.ts:975"
+reason = "Test-only setTimeout calls with constant delays used to wait for test fixtures."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS162092"
+id = "254876d5e899"
+location = "src/browser/discovery.ts:188"
+reason = "These lines are intended user-facing CLI output or localhost addresses (for example 'localhost:3000'), not debug code, and they print no secrets."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS162092"
+id = "039fbd72b865"
+location = "src/expose/index.ts:96"
+reason = "These lines are intended user-facing CLI output or localhost addresses (for example 'localhost:3000'), not debug code, and they print no secrets."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS162092"
+id = "132a232280b5"
+location = "src/expose/index.ts:148"
+reason = "These lines are intended user-facing CLI output or localhost addresses (for example 'localhost:3000'), not debug code, and they print no secrets."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS162092"
+id = "2c9fffc50991"
+location = "src/expose/index.ts:225"
+reason = "These lines are intended user-facing CLI output or localhost addresses (for example 'localhost:3000'), not debug code, and they print no secrets."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS162092"
+id = "52e56b4cba9b"
+location = "src/expose/index.ts:227"
+reason = "These lines are intended user-facing CLI output or localhost addresses (for example 'localhost:3000'), not debug code, and they print no secrets."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS162092"
+id = "9fc3c250ffc3"
+location = "src/orchestrate/index.ts:246"
+reason = "These lines are intended user-facing CLI output or localhost addresses (for example 'localhost:3000'), not debug code, and they print no secrets."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS162092"
+id = "fecb918bbdf8"
+location = "src/orchestrate/index.ts:249"
+reason = "These lines are intended user-facing CLI output or localhost addresses (for example 'localhost:3000'), not debug code, and they print no secrets."
+
+[[ignore]]
+scanner = "devskim"
+rule = "DS162092"
+id = "8125d66e84ce"
+location = ".taiga/static-checks-ignore.toml:128"
+reason = "Matches are quoted code snippets inside the static-check ignore file, which is configuration and never runs."

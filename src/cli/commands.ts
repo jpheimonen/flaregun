@@ -50,7 +50,7 @@ export function dispatch(
   stderr: (msg: string) => void = console.error,
 ): { result: DispatchResult | null; exitCode: number } {
   // No arguments or help flag → show help
-  if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
+  if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
     printHelp(stdout);
     return { result: null, exitCode: 0 };
   }
