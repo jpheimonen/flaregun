@@ -1,0 +1,32 @@
+[
+  {
+    "check": "docs",
+    "run": true,
+    "reason": "The README and help text were rewritten around tunnels, so I will check they match the new setup and expose behavior.",
+    "command": ""
+  },
+  {
+    "check": "build",
+    "run": false,
+    "reason": "The UI bundle was not changed and build-ui passed in fast checks; the CLI runs from source under Bun.",
+    "command": ""
+  },
+  {
+    "check": "smoke",
+    "run": true,
+    "reason": "Run the changed CLI once to confirm it starts and its tunnel-first help and expose usage display correctly.",
+    "command": "taiga runner request \"In the repo root, run the flaregun CLI entry point with bun (see package.json bin/scripts) with --help, then 'expose --help', and report the output and exit codes. Do not contact Cloudflare.\""
+  },
+  {
+    "check": "full_tests",
+    "run": true,
+    "reason": "The browser automation tests are skipped in the default run unless a Chrome binary is given; run them against the fake dashboard.",
+    "command": "taiga runner request \"Run the browser automation tests: FLAREGUN_TEST_CHROME set to the Playwright Chromium binary under ~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome, then 'bun test tests/browser'. Report pass/fail/skip counts.\""
+  },
+  {
+    "check": "security",
+    "run": true,
+    "reason": "The change handles API tokens and secrets, drives a browser over a local debugging port, and downloads and runs a binary.",
+    "command": ""
+  }
+]
