@@ -1,41 +1,74 @@
 # flaregun
 
-Manage your entire Cloudflare domain stack from a single config file. Flaregun provisions tunnels, DNS records, Access policies, Pages deployments, Workers, and serverless resources (D1, R2, KV) — all declared in one `flaregun.yml`.
-
-## Prerequisites
-
-- [Bun](https://bun.sh) runtime
-- [wrangler](https://developers.cloudflare.com/workers/wrangler/) CLI (for Pages/Worker deployments)
-- [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) (for tunnel daemon)
-- A Cloudflare account with a registered domain
-
-## Quick Start
+Put a local port on your own domain behind Cloudflare Zero Trust login, with one command:
 
 ```bash
-# Install dependencies
-bun install
-
-# Run the guided setup wizard
-bun run src/cli/index.ts setup
-
-# Start everything — sync Cloudflare, launch services, open tunnel
-bun run src/cli/index.ts up
+flaregun expose 3000
+# ✓ Added to flaregun.yml: https://3000.example.com → localhost:3000 (login required)
 ```
 
-The setup wizard walks you through creating a Cloudflare API token, configuring an identity provider for Access, creating a tunnel, and generating your `.env` and starter `flaregun.yml`.
+The first run sets everything up. flaregun clicks through the Cloudflare dashboard in your own browser, then does the rest through the API: it creates its API token, switches on Zero Trust with email one-time-PIN login, creates a tunnel and the DNS records, and starts `cloudflared`. You only need to be logged in to Cloudflare and have a domain on it.
+
+flaregun can also run your local services under supervision, deploy Pages sites with D1/R2/KV, and serve an admin UI. All of it is declared in one `flaregun.yml`.
+
+## Install
+
+You need [Bun](https://bun.sh) and a Cloudflare account with a domain on it.
+
+```bash
+git clone https://github.com/jpheimonen/flaregun && cd flaregun
+bun install && (cd admin-ui && bun install && bun run build)
+bun link          # puts `flaregun` on your PATH
+```
+
+If `cloudflared` isn't installed, `flaregun up` offers to download it into `~/.local/share/flaregun/bin` (Linux and macOS). Deploying Pages sites also needs [wrangler](https://developers.cloudflare.com/workers/wrangler/).
+
+## Quick start
+
+Run these in the folder where you want flaregun's files (`flaregun.yml`, `.env`, `flaregun.lock`):
+
+```bash
+flaregun expose 3000                  # https://3000.example.com, login required
+flaregun expose 8080 grafana          # https://grafana.example.com
+flaregun expose 5173 demo --public    # https://demo.example.com, open to anyone
+```
+
+The first `expose` runs `flaregun setup` and then `flaregun up`, which keeps the tunnel open until you press Ctrl+C. While `up` is running, `flaregun expose` in another terminal adds the new address to it right away.
+
+People listed as admins in `flaregun.yml` can open protected addresses. Cloudflare asks for their email and sends a one-time code.
+
+## What setup does
+
+`flaregun setup` asks as little as it can and is safe to run again; every step reuses what already exists.
+
+1. **API token.** Cloudflare's API can't create your first token, so flaregun opens the API tokens page in your default browser and clicks through the **Create Additional Tokens** template: *Create Token → Use template → Continue to summary → Create Token*. It reads the new token from the page. It uses this token once to create its own token with exactly the permissions it needs, then deletes it.
+2. **Account and domain.** Picked automatically when there's only one; otherwise you choose from a list.
+3. **Zero Trust.** flaregun switches it on through the API and adds One-time PIN login if there's no login method yet. If Cloudflare insists on the dashboard (for example to choose a plan), flaregun opens it and waits. You pick the team name and the Free plan; flaregun never clicks plan or billing pages.
+4. **Admins.** Defaults to your Cloudflare account email. Press Enter to accept it.
+5. **Tunnel.** Reuses the domain's tunnel or creates one, and fetches its token.
+6. **Files.** Writes `.env` (secrets, mode 600), a starter `flaregun.yml` (only if missing) and `flaregun.lock`.
+
+### How flaregun uses your browser
+
+flaregun works like factory-vm: it drives the browser you already use and are logged in to, rather than starting a separate one. It supports Chrome, Brave, Edge, Chromium and Vivaldi.
+
+- The first time, flaregun opens `<browser>://inspect/#remote-debugging` (for example `brave://inspect/#remote-debugging`). Switch remote debugging on there; flaregun notices it within a couple of seconds.
+- Your browser then asks whether to allow the connection. Click **Allow**.
+- flaregun opens its own tab. If you're logged out, log in there; flaregun carries on afterwards.
+
+If a step goes wrong (Cloudflare changed a button, you press Enter to skip, or the browser isn't supported), flaregun leaves the tab open and tells you what to click and where to paste the token. Use `--no-browser` to always do these clicks yourself. Set `FLAREGUN_BROWSER_PROFILE` to a profile folder to use a browser other than your default one.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `flaregun up` | Sync Cloudflare state, start local services with process supervision, start the admin UI, start the tunnel, and block until interrupted |
-| `flaregun down` | Gracefully stop all local services, the admin UI, and the tunnel |
+| `flaregun setup [--no-browser]` | Connect flaregun to Cloudflare (see above) |
+| `flaregun expose <port> [subdomain] [--public] [--no-browser]` | Add a local port to `flaregun.yml` and put it online. The subdomain defaults to the port number |
+| `flaregun up` | Sync Cloudflare, start supervised services and the admin UI, run the tunnel, and block until Ctrl+C. Runs setup first in a folder that isn't set up |
+| `flaregun down` | Stop a running `flaregun up` |
 | `flaregun deploy [services...]` | Build, provision cloud resources, and deploy Pages projects and the fallback Worker |
 | `flaregun build [services...]` | Build services locally without deploying (useful for CI) |
-| `flaregun setup` | Interactive guided setup for first-time Cloudflare configuration |
 | `flaregun destroy` | Tear down all Cloudflare resources (with confirmation prompt) |
-
-The `deploy` and `build` commands accept optional service names to operate on a subset. When no names are given, they operate on all eligible services.
 
 ## Configuration
 
@@ -45,7 +78,7 @@ All infrastructure is declared in a single `flaregun.yml` file:
 domain: example.com
 
 auth:
-  provider: google
+  provider: onetimepin
   superusers:
     - admin@example.com
 
@@ -83,7 +116,7 @@ services:
 Flaregun infers service type from the declared properties — no explicit `type` field needed:
 
 - **Pages services**: Have a `dist` field. Deployed to Cloudflare Pages. Support optional `build`, `functions`, `database`, `bucket`, and `kv` fields.
-- **Local services**: Have `command` and `port` fields. Run as supervised child processes during `flaregun up`. Support optional `build` and `max_retries`.
+- **Local services**: Have a `port`. With a `command`, flaregun runs it as a supervised child process during `flaregun up` (with optional `build` and `max_retries`). Without one, flaregun only tunnels to a port that's already served, which is what `flaregun expose` adds.
 
 ### Auth Modes
 
@@ -155,6 +188,9 @@ bun test
 
 # Run a specific test file
 bun test tests/config.test.ts
+
+# Also drive a real headless Chrome through a local copy of the token pages
+FLAREGUN_TEST_CHROME=/path/to/chrome bun test tests/browser
 ```
 
 ### Project Structure
@@ -168,7 +204,10 @@ src/
   process/    # Process supervisor with lifecycle state machine
   admin/      # Admin UI backend (REST + WebSocket)
   worker/     # Fallback Worker generator
-  setup/      # Interactive setup wizard
+  setup/      # Setup: token creation, Zero Trust, tunnel, files
+  browser/    # Finding and driving the person's own browser (DevTools protocol)
+  expose/     # `flaregun expose`
+  tunnel/     # Finding and downloading cloudflared
   lock/       # Lock file manager
   env/        # Environment variable loader
 admin-ui/     # React SPA (Zustand + Material UI)

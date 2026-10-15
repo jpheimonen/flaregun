@@ -223,6 +223,32 @@ describe("Hot-reload engine", () => {
       expect((startCalls[0].args[0] as any).command).toBe("node server.js");
     });
 
+    test("adding a port-only service starts nothing but updates the tunnel ingress", async () => {
+      const oldConfig = baseConfig({ services: {} });
+      const portOnly = { ...localService("grafana", { port: 3000 }), command: undefined };
+      const newConfig = baseConfig({ services: { grafana: portOnly } });
+
+      const result = await reload(oldConfig, newConfig);
+
+      expect(result.success).toBe(true);
+      expect(mockSupervisor.calls.filter((c) => c.method === "startService")).toHaveLength(0);
+      expect(mockClient.getCalls("tunnelConfig.update").length).toBeGreaterThan(0);
+    });
+
+    test("removing a service's command stops it and leaves the port tunneled", async () => {
+      const oldConfig = baseConfig({
+        services: { api: localService("api", { port: 3000, command: "node server.js" }) },
+      });
+      const newConfig = baseConfig({
+        services: { api: { ...localService("api", { port: 3000 }), command: undefined } },
+      });
+
+      const result = await reload(oldConfig, newConfig);
+
+      expect(result.success).toBe(true);
+      expect(mockSupervisor.calls.map((c) => c.method)).toEqual(["stopService"]);
+    });
+
     test("adding a local service with non-public auth creates an Access application and policy", async () => {
       const oldConfig = baseConfig({ services: {} });
       const newConfig = baseConfig({

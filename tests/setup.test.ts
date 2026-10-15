@@ -1,919 +1,357 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from "fs";
-import { join } from "path";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import {
-  handleSetup,
-  verifyToken,
-  lookupZoneId,
-  listAccounts,
-  createTunnel,
-  deriveTunnelName,
-  generateEnvContent,
-  generateConfigContent,
-  stepApiToken,
-  stepIdentityProvider,
-  stepCreateTunnel,
-  stepGenerateEnv,
-  stepGenerateConfig,
-  stepInitLockFile,
-  printSummary,
-  type SetupIO,
-  type SetupDeps,
-  type SetupState,
-} from "../src/setup/index.js";
+import { join } from "path";
 import { parseConfig } from "../src/config/index.js";
-import { loadLockFile } from "../src/lock/index.js";
+import { loadLockFile, saveLockFile, emptyState } from "../src/lock/index.js";
+import {
+  deriveTunnelName,
+  generateConfigContent,
+  runSetup,
+  updateEnvContent,
+  type SetupDeps,
+} from "../src/setup/index.js";
+import { FakeCloudflare, scriptedDashboard, scriptedIO } from "./helpers/setup-fakes.js";
 
-// --- Test Helpers ---
+const ENV_KEYS = [
+  "CLOUDFLARE_API_TOKEN",
+  "CLOUDFLARE_ACCOUNT_ID",
+  "CLOUDFLARE_ZONE_ID",
+  "CLOUDFLARE_TUNNEL_TOKEN",
+];
 
-function makeTmpDir(): string {
-  return mkdtempSync(join(tmpdir(), "flaregun-setup-test-"));
-}
+let cwd: string;
+let savedEnv: Record<string, string | undefined>;
 
-/** Creates a mock SetupIO that feeds answers from a queue */
-function createMockIO(answers: string[] = []): {
-  io: SetupIO;
-  output: string[];
-  answerQueue: string[];
-} {
-  const output: string[] = [];
-  const answerQueue = [...answers];
+beforeEach(() => {
+  cwd = mkdtempSync(join(tmpdir(), "flaregun-setup-test-"));
+  // runSetup reads and sets these; keep tests independent of each other and the shell.
+  savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+  for (const key of ENV_KEYS) delete process.env[key];
+});
 
-  const io: SetupIO = {
-    print(msg: string) {
-      output.push(msg);
-    },
-    async prompt(_question: string): Promise<string> {
-      const answer = answerQueue.shift();
-      if (answer === undefined) {
-        throw new Error(`No more answers in queue for prompt: ${_question}`);
-      }
-      return answer;
-    },
-    async confirm(_question: string): Promise<boolean> {
-      const answer = answerQueue.shift();
-      if (answer === undefined) {
-        throw new Error(`No more answers in queue for confirm: ${_question}`);
-      }
-      return answer.toLowerCase().startsWith("y");
-    },
-  };
-
-  return { io, output, answerQueue };
-}
-
-/** Creates a mock Cloudflare client for setup wizard tests */
-function createSetupMockClient(options: {
-  tokenValid?: boolean;
-  tokenError?: string;
-  accounts?: Array<{ id: string; name: string }>;
-  zones?: Array<{ id: string; name: string }>;
-  tunnelResult?: { id: string; token: string };
-  tunnelError?: string;
-} = {}) {
-  const {
-    tokenValid = true,
-    tokenError,
-    accounts = [{ id: "acct-123", name: "My Account" }],
-    zones = [{ id: "zone-456", name: "example.com" }],
-    tunnelResult = { id: "tunnel-789", token: "tunnel-token-abc" },
-    tunnelError,
-  } = options;
-
-  const calls: Record<string, unknown[][]> = {};
-  function track(method: string, ...args: unknown[]) {
-    if (!calls[method]) calls[method] = [];
-    calls[method].push(args);
+afterEach(() => {
+  rmSync(cwd, { recursive: true, force: true });
+  for (const key of ENV_KEYS) {
+    if (savedEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = savedEnv[key];
   }
+});
 
-  const client = {
-    user: {
-      tokens: {
-        verify: async () => {
-          track("tokens.verify");
-          if (!tokenValid) {
-            throw new Error(tokenError ?? "Authentication error");
-          }
-          return { status: "active" };
-        },
-      },
-    },
-    accounts: {
-      list: () => {
-        track("accounts.list");
-        return {
-          [Symbol.asyncIterator]: async function* () {
-            for (const account of accounts) {
-              yield account;
-            }
-          },
-        };
-      },
-    },
-    zones: {
-      list: (_params: any) => {
-        track("zones.list", _params);
-        const matchingZones = zones.filter(
-          (z) => !_params?.name || z.name === _params.name,
-        );
-        return {
-          [Symbol.asyncIterator]: async function* () {
-            for (const zone of matchingZones) {
-              yield zone;
-            }
-          },
-        };
-      },
-    },
-    zeroTrust: {
-      tunnels: {
-        create: async (params: any) => {
-          track("tunnels.create", params);
-          if (tunnelError) {
-            throw new Error(tunnelError);
-          }
-          return {
-            id: tunnelResult.id,
-            token: tunnelResult.token,
-            name: params.name,
-          };
-        },
-      },
-    },
+function deps(
+  cf: FakeCloudflare,
+  io: ReturnType<typeof scriptedIO>,
+  dashboard: ReturnType<typeof scriptedDashboard>,
+): SetupDeps {
+  return {
+    io: io.io,
+    createClient: (token) => cf.client(token),
+    dashboard: dashboard.dashboard,
+    cwd,
+    onboardingWaitMs: 1000,
   };
-
-  return { client, calls, getCalls: (method: string) => calls[method] ?? [] };
 }
 
-// --- Token Validation Tests ---
+const readEnv = () => readFileSync(join(cwd, ".env"), "utf-8");
 
-describe("token validation", () => {
-  test("a valid API token passes verification", async () => {
-    const mock = createSetupMockClient({ tokenValid: true });
-    const result = await verifyToken(mock.client as any);
-    expect(result.valid).toBe(true);
-  });
+describe("setup in a fresh folder", () => {
+  test("gets from a dashboard token to a ready tunnel with one question", async () => {
+    const cf = new FakeCloudflare();
+    const bootstrapId = cf.addToken("bootstrap-token", "bootstrap");
+    const io = scriptedIO([""]); // accept the default admin email
+    const dashboard = scriptedDashboard(["bootstrap-token"]);
 
-  test("an invalid API token fails with a descriptive error", async () => {
-    const mock = createSetupMockClient({
-      tokenValid: false,
-      tokenError: "Invalid API Token",
-    });
-    const result = await verifyToken(mock.client as any);
-    expect(result.valid).toBe(false);
-    expect(result.error).toContain("Invalid API Token");
-  });
+    const result = await runSetup(deps(cf, io, dashboard));
 
-  test("after failed validation the wizard re-prompts", async () => {
-    // First call: invalid token client, second call: valid token client
-    let callCount = 0;
-    const invalidMock = createSetupMockClient({
-      tokenValid: false,
-      tokenError: "Bad token",
-    });
-    const validMock = createSetupMockClient({
-      tokenValid: true,
-      accounts: [{ id: "acct-123", name: "Test Account" }],
-      zones: [{ id: "zone-456", name: "example.com" }],
-    });
+    expect(result).toEqual({ success: true, domain: "example.com", configPath: join(cwd, "flaregun.yml") });
+    expect(io.questions).toHaveLength(1);
+    expect(io.questions[0]).toContain("Admin emails");
 
-    const { io, output } = createMockIO([
-      "bad-token",       // first token attempt (invalid)
-      "good-token",      // second token attempt (valid)
-      "example.com",     // domain
-    ]);
+    // flaregun made its own token and removed the temporary one
+    expect(cf.createdTokens).toHaveLength(1);
+    expect(cf.deletedTokenIds).toEqual([bootstrapId]);
+    expect(dashboard.record.closed).toBe(true);
 
-    const tmpDir = makeTmpDir();
-    const deps: SetupDeps = {
-      io,
-      createClient: (_token: string) => {
-        callCount++;
-        if (callCount === 1) return invalidMock.client as any;
-        return validMock.client as any;
-      },
-      cwd: tmpDir,
-    };
+    // Zero Trust switched on with a One-time PIN login
+    expect(cf.organizations.get("acct-1")?.auth_domain).toBe("example.cloudflareaccess.com");
+    expect(cf.identityProviders.get("acct-1")).toEqual([{ type: "onetimepin", name: "One-time PIN" }]);
 
-    try {
-      const result = await stepApiToken(deps);
+    // A tunnel was created
+    expect(cf.tunnels).toEqual([{ id: "tunnel-1", name: "example-com-tunnel", account: "acct-1" }]);
 
-      // Should have received the valid token
-      expect(result.apiToken).toBe("good-token");
-      // Output should contain failure message
-      const failMsg = output.find((m) => m.includes("Token validation failed"));
-      expect(failMsg).toBeDefined();
-      // Output should contain success message
-      const successMsg = output.find((m) => m.includes("API token verified"));
-      expect(successMsg).toBeDefined();
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-});
+    const env = readEnv();
+    expect(env).toContain("CLOUDFLARE_API_TOKEN=flaregun-token-1\n");
+    expect(env).toContain("CLOUDFLARE_ACCOUNT_ID=acct-1\n");
+    expect(env).toContain("CLOUDFLARE_ZONE_ID=zone-1\n");
+    expect(env).toContain("CLOUDFLARE_TUNNEL_TOKEN=tunnel-token-for-tunnel-1\n");
+    expect(statSync(join(cwd, ".env")).mode & 0o777).toBe(0o600);
 
-// --- Account and Zone Lookup Tests ---
-
-describe("account and zone lookup", () => {
-  test("a valid domain resolves to a zone ID via the SDK", async () => {
-    const mock = createSetupMockClient({
-      zones: [{ id: "zone-abc", name: "example.com" }],
-    });
-    const result = await lookupZoneId(mock.client as any, "example.com");
-    expect(result.zoneId).toBe("zone-abc");
-  });
-
-  test("an invalid domain produces an error", async () => {
-    const mock = createSetupMockClient({ zones: [] });
-    const result = await lookupZoneId(mock.client as any, "nonexistent.com");
-    expect(result.error).toContain("No zone found");
-  });
-
-  test("zone lookup re-prompts on invalid domain", async () => {
-    const mock = createSetupMockClient({
-      accounts: [{ id: "acct-123", name: "Test Account" }],
-      zones: [{ id: "zone-456", name: "example.com" }],
-    });
-
-    const { io, output } = createMockIO([
-      "valid-token",
-      "bad-domain.xyz",  // first domain attempt (no zone)
-      "example.com",      // second domain attempt (valid)
-    ]);
-
-    // Override zone lookup to fail first then succeed
-    let domainAttempts = 0;
-    const originalList = mock.client.zones.list;
-    mock.client.zones.list = (params: any) => {
-      domainAttempts++;
-      if (domainAttempts === 1) {
-        return {
-          [Symbol.asyncIterator]: async function* () {
-            // no zones
-          },
-        };
-      }
-      return originalList(params);
-    };
-
-    const tmpDir = makeTmpDir();
-    const deps: SetupDeps = {
-      io,
-      createClient: () => mock.client as any,
-      cwd: tmpDir,
-    };
-
-    try {
-      const result = await stepApiToken(deps);
-      expect(result.zoneId).toBe("zone-456");
-      expect(result.domain).toBe("example.com");
-      const errorMsg = output.find((m) => m.includes("No zone found"));
-      expect(errorMsg).toBeDefined();
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-});
-
-// --- Tunnel Creation Tests ---
-
-describe("tunnel creation", () => {
-  test("deriveTunnelName converts domain to tunnel name", () => {
-    expect(deriveTunnelName("example.com")).toBe("example-com-tunnel");
-    expect(deriveTunnelName("my.cool.site")).toBe("my-cool-site-tunnel");
-  });
-
-  test("a tunnel is created via the SDK with correct name and account ID", async () => {
-    const mock = createSetupMockClient({
-      tunnelResult: { id: "tun-new-123", token: "tun-tok-new" },
-    });
-    const { io } = createMockIO([]);
-
-    const tmpDir = makeTmpDir();
-    const deps: SetupDeps = {
-      io,
-      createClient: () => mock.client as any,
-      cwd: tmpDir,
-    };
-
-    try {
-      const result = await stepCreateTunnel(
-        deps,
-        mock.client as any,
-        "acct-123",
-        "example.com",
-      );
-
-      expect(result.tunnelId).toBe("tun-new-123");
-      expect(result.tunnelToken).toBe("tun-tok-new");
-      expect(result.tunnelName).toBe("example-com-tunnel");
-
-      // Verify SDK was called with correct params
-      const createCalls = mock.getCalls("tunnels.create");
-      expect(createCalls.length).toBe(1);
-      const params = createCalls[0][0] as any;
-      expect(params.account_id).toBe("acct-123");
-      expect(params.name).toBe("example-com-tunnel");
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  test("tunnel ID and token are extracted from the SDK response", async () => {
-    const mock = createSetupMockClient({
-      tunnelResult: { id: "extracted-id", token: "extracted-token" },
-    });
-    const result = await createTunnel(
-      mock.client as any,
-      "acct-123",
-      "test-tunnel",
-    );
-    expect(result.id).toBe("extracted-id");
-    expect(result.token).toBe("extracted-token");
-  });
-
-  test("tunnel name conflict shows error and offers alternatives", async () => {
-    const mock = createSetupMockClient({
-      tunnelError: "Tunnel already exists with this name",
-    });
-    const { io, output } = createMockIO([
-      "y",                    // yes, use existing
-      "existing-tunnel-id",   // tunnel ID
-      "existing-tunnel-tok",  // tunnel token
-    ]);
-
-    const tmpDir = makeTmpDir();
-    const deps: SetupDeps = {
-      io,
-      createClient: () => mock.client as any,
-      cwd: tmpDir,
-    };
-
-    try {
-      const result = await stepCreateTunnel(
-        deps,
-        mock.client as any,
-        "acct-123",
-        "example.com",
-      );
-
-      expect(result.tunnelId).toBe("existing-tunnel-id");
-      expect(result.tunnelToken).toBe("existing-tunnel-tok");
-      const errorMsg = output.find((m) => m.includes("already exists"));
-      expect(errorMsg).toBeDefined();
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-});
-
-// --- File Generation Tests ---
-
-describe("env file generation", () => {
-  test("generated .env contains all four required environment variables", () => {
-    const content = generateEnvContent({
-      apiToken: "tok-123",
-      accountId: "acct-456",
-      zoneId: "zone-789",
-      tunnelToken: "tun-abc",
-    });
-
-    expect(content).toContain("CLOUDFLARE_API_TOKEN=tok-123");
-    expect(content).toContain("CLOUDFLARE_ACCOUNT_ID=acct-456");
-    expect(content).toContain("CLOUDFLARE_ZONE_ID=zone-789");
-    expect(content).toContain("CLOUDFLARE_TUNNEL_TOKEN=tun-abc");
-  });
-
-  test("generated .env includes descriptive comments", () => {
-    const content = generateEnvContent({
-      apiToken: "tok",
-      accountId: "acct",
-      zoneId: "zone",
-      tunnelToken: "tun",
-    });
-
-    expect(content).toContain("# Cloudflare API token");
-    expect(content).toContain("# Cloudflare account identifier");
-    expect(content).toContain("# Cloudflare Zone ID");
-    expect(content).toContain("# Cloudflare Tunnel token");
-  });
-
-  test(".env is written without prompting if it does not exist", async () => {
-    const tmpDir = makeTmpDir();
-    const { io, output } = createMockIO([]);
-
-    const deps: SetupDeps = {
-      io,
-      createClient: () => ({} as any),
-      cwd: tmpDir,
-    };
-
-    const written = await stepGenerateEnv(deps, {
-      apiToken: "tok",
-      accountId: "acct",
-      zoneId: "zone",
-      tunnelToken: "tun",
-    });
-
-    expect(written).toBe(true);
-    expect(existsSync(join(tmpDir, ".env"))).toBe(true);
-    const content = readFileSync(join(tmpDir, ".env"), "utf-8");
-    expect(content).toContain("CLOUDFLARE_API_TOKEN=tok");
-
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  test(".env overwrite prompts user when file already exists", async () => {
-    const tmpDir = makeTmpDir();
-    writeFileSync(join(tmpDir, ".env"), "OLD=content\n");
-
-    // User declines overwrite
-    const { io: ioDecline } = createMockIO(["n"]);
-    const depsDecline: SetupDeps = {
-      io: ioDecline,
-      createClient: () => ({} as any),
-      cwd: tmpDir,
-    };
-
-    const written = await stepGenerateEnv(depsDecline, {
-      apiToken: "tok",
-      accountId: "acct",
-      zoneId: "zone",
-      tunnelToken: "tun",
-    });
-
-    expect(written).toBe(false);
-    const content = readFileSync(join(tmpDir, ".env"), "utf-8");
-    expect(content).toBe("OLD=content\n");
-
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  test(".env is overwritten when user confirms", async () => {
-    const tmpDir = makeTmpDir();
-    writeFileSync(join(tmpDir, ".env"), "OLD=content\n");
-
-    const { io } = createMockIO(["y"]);
-    const deps: SetupDeps = {
-      io,
-      createClient: () => ({} as any),
-      cwd: tmpDir,
-    };
-
-    const written = await stepGenerateEnv(deps, {
-      apiToken: "new-tok",
-      accountId: "new-acct",
-      zoneId: "new-zone",
-      tunnelToken: "new-tun",
-    });
-
-    expect(written).toBe(true);
-    const content = readFileSync(join(tmpDir, ".env"), "utf-8");
-    expect(content).toContain("CLOUDFLARE_API_TOKEN=new-tok");
-
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-});
-
-describe("config file generation", () => {
-  test("generated flaregun.yml contains domain, auth, and homepage service", () => {
-    const content = generateConfigContent({
-      domain: "example.com",
-      provider: "google",
-      superusers: ["admin@example.com"],
-    });
-
-    expect(content).toContain("domain: example.com");
-    expect(content).toContain("provider: google");
-    expect(content).toContain("- admin@example.com");
-    expect(content).toContain("homepage:");
-    expect(content).toContain("subdomain: www");
-    expect(content).toContain("dist: projects/homepage/dist");
-  });
-
-  test("generated flaregun.yml passes config loader validation", () => {
-    const content = generateConfigContent({
-      domain: "example.com",
-      provider: "google",
-      superusers: ["admin@example.com"],
-    });
-
-    const config = parseConfig(content);
+    const config = parseConfig(readFileSync(join(cwd, "flaregun.yml"), "utf-8"));
     expect(config.domain).toBe("example.com");
-    expect(config.auth.provider).toBe("google");
-    expect(config.auth.superusers).toEqual(["admin@example.com"]);
-    expect(config.services.homepage).toBeDefined();
-    expect(config.services.homepage.subdomain).toBe("www");
-    expect(config.services.homepage.type).toBe("pages");
+    expect(config.auth).toEqual({ provider: "onetimepin", superusers: ["me@example.com"] });
+    expect(config.services).toEqual({});
+
+    expect(loadLockFile(join(cwd, "flaregun.lock")).tunnel).toEqual({ id: "tunnel-1" });
+
+    // Commands that run next in the same process see the credentials
+    expect(process.env.CLOUDFLARE_TUNNEL_TOKEN).toBe("tunnel-token-for-tunnel-1");
   });
 
-  test("generated flaregun.yml includes helpful comments", () => {
-    const content = generateConfigContent({
-      domain: "example.com",
-      provider: "github",
-      superusers: ["user@example.com"],
-    });
+  test("the created token asks for each permission on the right kind of resource", async () => {
+    const cf = new FakeCloudflare();
+    cf.addToken("bootstrap-token", "bootstrap");
 
-    expect(content).toContain("# ");
-    expect(content).toContain("Add more services");
-  });
+    await runSetup(deps(cf, scriptedIO([""]), scriptedDashboard(["bootstrap-token"])));
 
-  test("generated flaregun.yml supports multiple superusers", () => {
-    const content = generateConfigContent({
-      domain: "example.com",
-      provider: "google",
-      superusers: ["admin1@example.com", "admin2@example.com"],
-    });
-
-    expect(content).toContain("- admin1@example.com");
-    expect(content).toContain("- admin2@example.com");
-
-    // Should still pass validation
-    const config = parseConfig(content);
-    expect(config.auth.superusers).toEqual([
-      "admin1@example.com",
-      "admin2@example.com",
+    const policies = cf.createdTokens[0].policies as Array<{
+      resources: Record<string, string>;
+      permission_groups: Array<{ id: string }>;
+    }>;
+    const byResource = Object.fromEntries(
+      policies.map((p) => [Object.keys(p.resources)[0], p.permission_groups.map((g) => g.id)]),
+    );
+    expect(byResource["com.cloudflare.api.account.*"]).toEqual([
+      "pg-tunnel",
+      "pg-access-apps",
+      "pg-access-org",
+      "pg-account-settings",
+      "pg-pages",
+      "pg-scripts",
+      "pg-d1",
+      "pg-r2",
+      "pg-kv",
     ]);
+    expect(byResource["com.cloudflare.api.account.zone.*"]).toEqual([
+      "pg-zone",
+      "pg-dns",
+      "pg-redirect",
+      "pg-routes",
+    ]);
+    expect(byResource["com.cloudflare.api.user.user-tag-1"]).toEqual(["pg-user", "pg-memberships"]);
   });
 
-  test("flaregun.yml is written without prompting if it does not exist", async () => {
-    const tmpDir = makeTmpDir();
-    const { io } = createMockIO([]);
+  test("a pasted ready-made token is used as it is", async () => {
+    const cf = new FakeCloudflare();
+    cf.addToken("my-own-token", "full");
 
-    const deps: SetupDeps = {
-      io,
-      createClient: () => ({} as any),
-      cwd: tmpDir,
-    };
+    const result = await runSetup(deps(cf, scriptedIO([""]), scriptedDashboard(["my-own-token"])));
 
-    const written = await stepGenerateConfig(deps, {
-      domain: "example.com",
-      provider: "google",
-      superusers: ["a@b.com"],
-    });
-
-    expect(written).toBe(true);
-    expect(existsSync(join(tmpDir, "flaregun.yml"))).toBe(true);
-
-    rmSync(tmpDir, { recursive: true, force: true });
+    expect(result.success).toBe(true);
+    expect(cf.createdTokens).toHaveLength(0);
+    expect(readEnv()).toContain("CLOUDFLARE_API_TOKEN=my-own-token\n");
   });
 
-  test("flaregun.yml overwrite prompts user when file already exists", async () => {
-    const tmpDir = makeTmpDir();
-    writeFileSync(join(tmpDir, "flaregun.yml"), "domain: old.com\n");
+  test("typed admin emails replace the default", async () => {
+    const cf = new FakeCloudflare();
+    cf.addToken("bootstrap-token", "bootstrap");
 
-    // User declines
-    const { io } = createMockIO(["n"]);
-    const deps: SetupDeps = {
-      io,
-      createClient: () => ({} as any),
-      cwd: tmpDir,
-    };
+    await runSetup(deps(cf, scriptedIO(["a@x.com, b@y.com"]), scriptedDashboard(["bootstrap-token"])));
 
-    const written = await stepGenerateConfig(deps, {
-      domain: "example.com",
-      provider: "google",
-      superusers: ["a@b.com"],
-    });
-
-    expect(written).toBe(false);
-    const content = readFileSync(join(tmpDir, "flaregun.yml"), "utf-8");
-    expect(content).toBe("domain: old.com\n");
-
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  test("flaregun.yml is overwritten when user confirms", async () => {
-    const tmpDir = makeTmpDir();
-    writeFileSync(join(tmpDir, "flaregun.yml"), "domain: old.com\n");
-
-    const { io } = createMockIO(["y"]);
-    const deps: SetupDeps = {
-      io,
-      createClient: () => ({} as any),
-      cwd: tmpDir,
-    };
-
-    const written = await stepGenerateConfig(deps, {
-      domain: "new.com",
-      provider: "github",
-      superusers: ["admin@new.com"],
-    });
-
-    expect(written).toBe(true);
-    const content = readFileSync(join(tmpDir, "flaregun.yml"), "utf-8");
-    expect(content).toContain("domain: new.com");
-
-    rmSync(tmpDir, { recursive: true, force: true });
+    const config = parseConfig(readFileSync(join(cwd, "flaregun.yml"), "utf-8"));
+    expect(config.auth.superusers).toEqual(["a@x.com", "b@y.com"]);
   });
 });
 
-// --- Lock File Tests ---
+describe("running setup again", () => {
+  test("reuses the token, Zero Trust, login method, config and tunnel without asking anything", async () => {
+    const cf = new FakeCloudflare();
+    cf.addToken("bootstrap-token", "bootstrap");
+    await runSetup(deps(cf, scriptedIO([""]), scriptedDashboard(["bootstrap-token"])));
+    writeFileSync(join(cwd, ".env"), readEnv() + "MY_OWN_SETTING=keep-me\n");
+    const configBefore = readFileSync(join(cwd, "flaregun.yml"), "utf-8");
+    for (const key of ENV_KEYS) delete process.env[key];
+    cf.calls = [];
 
-describe("lock file initialization", () => {
-  test("tunnel ID is stored in the lock file", async () => {
-    const tmpDir = makeTmpDir();
-    const { io } = createMockIO([]);
+    const io = scriptedIO([]);
+    const dashboard = scriptedDashboard([]);
+    const result = await runSetup(deps(cf, io, dashboard));
 
-    const deps: SetupDeps = {
-      io,
-      createClient: () => ({} as any),
-      cwd: tmpDir,
-    };
-
-    await stepInitLockFile(deps, "tunnel-id-999");
-
-    const lockPath = join(tmpDir, "flaregun.lock");
-    expect(existsSync(lockPath)).toBe(true);
-
-    const state = loadLockFile(lockPath);
-    expect(state.tunnel).toBeDefined();
-    expect(state.tunnel!.id).toBe("tunnel-id-999");
-
-    rmSync(tmpDir, { recursive: true, force: true });
+    expect(result.success).toBe(true);
+    expect(io.questions).toEqual([]);
+    expect(dashboard.record.bootstrapCalls).toBe(0);
+    expect(cf.calls).not.toContain("tokens.create");
+    expect(cf.calls).not.toContain("organizations.create");
+    expect(cf.calls).not.toContain("identityProviders.create");
+    expect(cf.calls).not.toContain("tunnels.create");
+    expect(cf.tunnels).toHaveLength(1);
+    expect(readFileSync(join(cwd, "flaregun.yml"), "utf-8")).toBe(configBefore);
+    expect(readEnv()).toContain("MY_OWN_SETTING=keep-me\n");
+    expect(io.output.join("\n")).toContain("✓ Using the API token from .env");
   });
 
-  test("existing lock file entries are preserved when adding tunnel ID", async () => {
-    const tmpDir = makeTmpDir();
-    const lockPath = join(tmpDir, "flaregun.lock");
+  test("a token in .env that stopped working is replaced through the dashboard", async () => {
+    const cf = new FakeCloudflare();
+    cf.addToken("bootstrap-token", "bootstrap");
+    writeFileSync(join(cwd, ".env"), "CLOUDFLARE_API_TOKEN=revoked\n");
 
-    // Write an existing lock file with some data
+    const io = scriptedIO([""]);
+    const result = await runSetup(deps(cf, io, scriptedDashboard(["bootstrap-token"])));
+
+    expect(result.success).toBe(true);
+    expect(io.output.join("\n")).toContain("no longer works");
+    expect(readEnv()).toContain("CLOUDFLARE_API_TOKEN=flaregun-token-1\n");
+    expect(readEnv()).not.toContain("revoked");
+  });
+
+  test("an existing tunnel with the domain's name is reused when the lock file is gone", async () => {
+    const cf = new FakeCloudflare();
+    cf.addToken("full", "full");
+    cf.tunnels.push({ id: "old-tunnel", name: deriveTunnelName("example.com"), account: "acct-1" });
+
+    await runSetup(deps(cf, scriptedIO([""]), scriptedDashboard(["full"])));
+
+    expect(cf.tunnels).toHaveLength(1);
+    expect(loadLockFile(join(cwd, "flaregun.lock")).tunnel).toEqual({ id: "old-tunnel" });
+    expect(readEnv()).toContain("CLOUDFLARE_TUNNEL_TOKEN=tunnel-token-for-old-tunnel\n");
+  });
+
+  test("a deleted tunnel in the lock file is replaced", async () => {
+    const cf = new FakeCloudflare();
+    cf.addToken("full", "full");
+    cf.tunnels.push({ id: "gone", name: "example-com-tunnel", account: "acct-1", deleted_at: "2026-01-01" });
+    const lock = emptyState();
+    lock.tunnel = { id: "gone" };
+    saveLockFile(join(cwd, "flaregun.lock"), lock);
+
+    await runSetup(deps(cf, scriptedIO([""]), scriptedDashboard(["full"])));
+
+    expect(loadLockFile(join(cwd, "flaregun.lock")).tunnel?.id).toBe("tunnel-2");
+  });
+});
+
+describe("accounts and domains", () => {
+  test("asks which account and domain when there are several", async () => {
+    const cf = new FakeCloudflare();
+    cf.addToken("full", "full");
+    cf.accounts = [
+      { id: "acct-1", name: "Personal" },
+      { id: "acct-2", name: "Work" },
+    ];
+    cf.zones = {
+      "acct-1": [{ id: "z1", name: "personal.dev" }],
+      "acct-2": [
+        { id: "z2", name: "work.com" },
+        { id: "z3", name: "work.dev" },
+      ],
+    };
+
+    const io = scriptedIO(["Work", "work.dev", ""]);
+    const result = await runSetup(deps(cf, io, scriptedDashboard(["full"])));
+
+    expect(result.domain).toBe("work.dev");
+    expect(readEnv()).toContain("CLOUDFLARE_ACCOUNT_ID=acct-2\n");
+    expect(readEnv()).toContain("CLOUDFLARE_ZONE_ID=z3\n");
+  });
+
+  test("an existing flaregun.yml picks its domain without asking", async () => {
+    const cf = new FakeCloudflare();
+    cf.addToken("full", "full");
+    cf.accounts = [
+      { id: "acct-1", name: "Personal" },
+      { id: "acct-2", name: "Work" },
+    ];
+    cf.zones = { "acct-1": [{ id: "z1", name: "personal.dev" }], "acct-2": [{ id: "z2", name: "work.com" }] };
     writeFileSync(
-      lockPath,
-      "# Auto-generated by flaregun — do not edit manually.\n# This file tracks provisioned Cloudflare resource IDs.\n\npages:\n  blog:\n    project_name: example-com-blog\n",
+      join(cwd, "flaregun.yml"),
+      generateConfigContent({ domain: "work.com", provider: "onetimepin", superusers: ["a@b.c"] }),
     );
 
-    const { io } = createMockIO([]);
-    const deps: SetupDeps = {
-      io,
-      createClient: () => ({} as any),
-      cwd: tmpDir,
-    };
+    const io = scriptedIO([]);
+    const result = await runSetup(deps(cf, io, scriptedDashboard(["full"])));
 
-    await stepInitLockFile(deps, "new-tunnel-id");
+    expect(result.domain).toBe("work.com");
+    expect(io.questions).toEqual([]);
+  });
 
-    const state = loadLockFile(lockPath);
-    expect(state.tunnel).toBeDefined();
-    expect(state.tunnel!.id).toBe("new-tunnel-id");
-    // Existing pages entry should still be there
-    expect(state.pages.blog).toBeDefined();
-    expect(state.pages.blog.project_name).toBe("example-com-blog");
+  test("an account without domains stops with a pointer to adding one", async () => {
+    const cf = new FakeCloudflare();
+    cf.addToken("full", "full");
+    cf.zones = {};
 
-    rmSync(tmpDir, { recursive: true, force: true });
+    const io = scriptedIO([]);
+    const result = await runSetup(deps(cf, io, scriptedDashboard(["full"])));
+
+    expect(result.success).toBe(false);
+    expect(io.output.join("\n")).toContain("add-site");
   });
 });
 
-// --- Identity Provider Tests ---
+describe("Zero Trust", () => {
+  test("tries another team name when the first is taken", async () => {
+    const cf = new FakeCloudflare();
+    cf.addToken("full", "full");
+    cf.takenTeamNames.add("example");
 
-describe("identity provider step", () => {
-  test("collects provider name and superuser emails", async () => {
-    const { io, output } = createMockIO([
-      "google",                           // provider name
-      "admin@example.com, dev@example.com", // superuser emails
-    ]);
+    await runSetup(deps(cf, scriptedIO([""]), scriptedDashboard(["full"])));
 
-    const tmpDir = makeTmpDir();
-    const deps: SetupDeps = {
-      io,
-      createClient: () => ({} as any),
-      cwd: tmpDir,
-    };
-
-    try {
-      const result = await stepIdentityProvider(deps);
-      expect(result.provider).toBe("google");
-      expect(result.superusers).toEqual(["admin@example.com", "dev@example.com"]);
-
-      // Should display instructions and links
-      const hasInstructions = output.some((m) => m.includes("identity provider"));
-      expect(hasInstructions).toBe(true);
-      const hasLink = output.some((m) => m.includes("one.dash.cloudflare.com"));
-      expect(hasLink).toBe(true);
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-});
-
-// --- Step 1 Display Tests ---
-
-describe("step 1 displays token information", () => {
-  test("displays exact API token permissions and creation URL", async () => {
-    const mock = createSetupMockClient({
-      accounts: [{ id: "acct-1", name: "Acct" }],
-      zones: [{ id: "zone-1", name: "example.com" }],
-    });
-
-    const { io, output } = createMockIO([
-      "valid-token",  // token
-      "example.com",  // domain
-    ]);
-
-    const tmpDir = makeTmpDir();
-    const deps: SetupDeps = {
-      io,
-      createClient: () => mock.client as any,
-      cwd: tmpDir,
-    };
-
-    try {
-      await stepApiToken(deps);
-
-      // Check permissions are listed
-      expect(output.some((m) => m.includes("Cloudflare Tunnel: Edit"))).toBe(true);
-      expect(output.some((m) => m.includes("DNS: Edit"))).toBe(true);
-      expect(output.some((m) => m.includes("D1: Edit"))).toBe(true);
-      expect(output.some((m) => m.includes("Workers R2 Storage: Edit"))).toBe(true);
-      expect(output.some((m) => m.includes("Workers KV Storage: Edit"))).toBe(true);
-      expect(output.some((m) => m.includes("Zone Rulesets: Edit"))).toBe(true);
-      expect(output.some((m) => m.includes("Cloudflare Pages: Edit"))).toBe(true);
-      expect(output.some((m) => m.includes("Workers Routes: Edit"))).toBe(true);
-      expect(output.some((m) => m.includes("Access: Apps and Policies: Edit"))).toBe(true);
-      expect(output.some((m) => m.includes("Organizations, Identity Providers"))).toBe(true);
-
-      // Check URL
-      expect(
-        output.some((m) =>
-          m.includes("dash.cloudflare.com/profile/api-tokens"),
-        ),
-      ).toBe(true);
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-});
-
-// --- Completion Summary Tests ---
-
-describe("completion summary", () => {
-  test("displays what was created and suggests next steps", () => {
-    const { io, output } = createMockIO([]);
-
-    const state: SetupState = {
-      apiToken: "tok",
-      accountId: "acct",
-      zoneId: "zone",
-      domain: "example.com",
-      provider: "google",
-      superusers: ["admin@example.com"],
-      tunnelId: "tunnel-123",
-      tunnelToken: "tun-tok",
-      tunnelName: "example-com-tunnel",
-      envWritten: true,
-      configWritten: true,
-      lockWritten: true,
-    };
-
-    printSummary(io, state);
-
-    // Check summary items
-    expect(output.some((m) => m.includes("API token validated"))).toBe(true);
-    expect(output.some((m) => m.includes("Identity provider configured"))).toBe(true);
-    expect(output.some((m) => m.includes("Tunnel created"))).toBe(true);
-    expect(output.some((m) => m.includes("example-com-tunnel"))).toBe(true);
-    expect(output.some((m) => m.includes(".env file") && m.includes("generated"))).toBe(true);
-    expect(output.some((m) => m.includes("flaregun.yml") && m.includes("generated"))).toBe(true);
-    expect(output.some((m) => m.includes("Lock file") && m.includes("initialized"))).toBe(true);
-
-    // Check next steps
-    expect(output.some((m) => m.includes("flaregun up"))).toBe(true);
-    expect(output.some((m) => m.includes("flaregun deploy"))).toBe(true);
-    expect(output.some((m) => m.includes("flaregun.yml"))).toBe(true);
+    expect(cf.organizations.get("acct-1")?.auth_domain).toBe("example-com.cloudflareaccess.com");
   });
 
-  test("shows skipped status for files not written", () => {
-    const { io, output } = createMockIO([]);
+  test("falls back to the dashboard and waits when the API can't switch it on", async () => {
+    const cf = new FakeCloudflare();
+    cf.addToken("full", "full");
+    cf.organizationCreateError = "Zero Trust onboarding required";
+    const dashboard = scriptedDashboard(["full"], () =>
+      cf.organizations.set("acct-1", { name: "picked", auth_domain: "picked.cloudflareaccess.com" }),
+    );
 
-    const state: SetupState = {
-      apiToken: "tok",
-      accountId: "acct",
-      zoneId: "zone",
-      domain: "example.com",
-      provider: "google",
-      superusers: ["admin@example.com"],
-      tunnelId: "tunnel-123",
-      tunnelToken: "tun-tok",
-      tunnelName: "example-com-tunnel",
-      envWritten: false,
-      configWritten: false,
-      lockWritten: true,
-    };
-
-    printSummary(io, state);
-
-    expect(output.some((m) => m.includes(".env file") && m.includes("skipped"))).toBe(true);
-    expect(output.some((m) => m.includes("flaregun.yml") && m.includes("skipped"))).toBe(true);
-  });
-});
-
-// --- Full Flow Integration Test ---
-
-describe("full setup wizard flow", () => {
-  test("walks through all steps and creates all files", async () => {
-    const tmpDir = makeTmpDir();
-
-    const mock = createSetupMockClient({
-      tokenValid: true,
-      accounts: [{ id: "acct-full", name: "Full Test Account" }],
-      zones: [{ id: "zone-full", name: "mysite.com" }],
-      tunnelResult: { id: "tun-full", token: "tun-tok-full" },
-    });
-
-    const { io, output } = createMockIO([
-      "my-api-token",                  // Step 1: token
-      "mysite.com",                    // Step 1: domain
-      "github",                        // Step 2: provider
-      "admin@mysite.com",              // Step 2: superusers
-    ]);
-
-    const result = await handleSetup({
-      io,
-      createClient: () => mock.client as any,
-      cwd: tmpDir,
-    });
+    const io = scriptedIO([""]);
+    const result = await runSetup(deps(cf, io, dashboard));
 
     expect(result.success).toBe(true);
-
-    // Verify .env was created with correct content
-    const envPath = join(tmpDir, ".env");
-    expect(existsSync(envPath)).toBe(true);
-    const envContent = readFileSync(envPath, "utf-8");
-    expect(envContent).toContain("CLOUDFLARE_API_TOKEN=my-api-token");
-    expect(envContent).toContain("CLOUDFLARE_ACCOUNT_ID=acct-full");
-    expect(envContent).toContain("CLOUDFLARE_ZONE_ID=zone-full");
-    expect(envContent).toContain("CLOUDFLARE_TUNNEL_TOKEN=tun-tok-full");
-
-    // Verify flaregun.yml was created and is valid
-    const configPath = join(tmpDir, "flaregun.yml");
-    expect(existsSync(configPath)).toBe(true);
-    const configContent = readFileSync(configPath, "utf-8");
-    expect(configContent).toContain("domain: mysite.com");
-    expect(configContent).toContain("provider: github");
-    expect(configContent).toContain("admin@mysite.com");
-
-    // Verify the config passes validation
-    const config = parseConfig(configContent);
-    expect(config.domain).toBe("mysite.com");
-
-    // Verify lock file was created with tunnel ID
-    const lockPath = join(tmpDir, "flaregun.lock");
-    expect(existsSync(lockPath)).toBe(true);
-    const lockState = loadLockFile(lockPath);
-    expect(lockState.tunnel!.id).toBe("tun-full");
-
-    // Verify summary was printed
-    expect(output.some((m) => m.includes("Setup Complete"))).toBe(true);
-    expect(output.some((m) => m.includes("flaregun up"))).toBe(true);
-
-    rmSync(tmpDir, { recursive: true, force: true });
+    expect(dashboard.record.onboardingShown).toBe(1);
+    expect(io.output.join("\n")).toContain("Zero Trust team: picked.cloudflareaccess.com");
   });
 
-  test("handles existing files with overwrite declined", async () => {
-    const tmpDir = makeTmpDir();
+  test("stops with instructions when onboarding isn't finished", async () => {
+    const cf = new FakeCloudflare();
+    cf.addToken("full", "full");
+    cf.organizationCreateError = "Zero Trust onboarding required";
 
-    // Pre-create files
-    writeFileSync(join(tmpDir, ".env"), "EXISTING=true\n");
-    writeFileSync(join(tmpDir, "flaregun.yml"), "domain: old.com\n");
+    const io = scriptedIO([]);
+    const result = await runSetup(deps(cf, io, scriptedDashboard(["full"])));
 
-    const mock = createSetupMockClient({
-      tokenValid: true,
-      accounts: [{ id: "acct-1", name: "Acct" }],
-      zones: [{ id: "zone-1", name: "test.com" }],
-      tunnelResult: { id: "tun-1", token: "tun-tok-1" },
-    });
+    expect(result.success).toBe(false);
+    expect(io.output.join("\n")).toContain("https://one.dash.cloudflare.com/");
+    // The token is saved even though setup stopped, so the next run doesn't need the dashboard.
+    expect(readEnv()).toContain("CLOUDFLARE_API_TOKEN=full\n");
+  });
 
-    const { io, output } = createMockIO([
-      "my-token",        // Step 1: token
-      "test.com",        // Step 1: domain
-      "google",          // Step 2: provider
-      "admin@test.com",  // Step 2: superusers
-      "n",               // Step 4: decline .env overwrite
-      "n",               // Step 5: decline config overwrite
-    ]);
+  test("keeps an existing login method", async () => {
+    const cf = new FakeCloudflare();
+    cf.addToken("full", "full");
+    cf.identityProviders.set("acct-1", [{ type: "github", name: "GitHub" }]);
 
-    const result = await handleSetup({
-      io,
-      createClient: () => mock.client as any,
-      cwd: tmpDir,
-    });
+    await runSetup(deps(cf, scriptedIO([""]), scriptedDashboard(["full"])));
 
-    expect(result.success).toBe(true);
+    expect(cf.calls).not.toContain("identityProviders.create");
+    const config = parseConfig(readFileSync(join(cwd, "flaregun.yml"), "utf-8"));
+    expect(config.auth.provider).toBe("github");
+  });
+});
 
-    // .env should be unchanged
-    const envContent = readFileSync(join(tmpDir, ".env"), "utf-8");
-    expect(envContent).toBe("EXISTING=true\n");
+describe("file helpers", () => {
+  test("updateEnvContent replaces flaregun keys in place and keeps other lines", () => {
+    const before = "# mine\nOTHER=1\nCLOUDFLARE_API_TOKEN=old\n";
+    const after = updateEnvContent(before, { CLOUDFLARE_API_TOKEN: "new", CLOUDFLARE_ZONE_ID: "z" });
+    expect(after).toBe("# mine\nOTHER=1\nCLOUDFLARE_API_TOKEN=new\nCLOUDFLARE_ZONE_ID=z\n");
+  });
 
-    // flaregun.yml should be unchanged
-    const configContent = readFileSync(join(tmpDir, "flaregun.yml"), "utf-8");
-    expect(configContent).toBe("domain: old.com\n");
+  test("the starter config is valid and has no services", () => {
+    const config = parseConfig(
+      generateConfigContent({ domain: "example.com", provider: "onetimepin", superusers: ["a@b.c"] }),
+    );
+    expect(config.services).toEqual({});
+  });
 
-    // Lock file should still be created/updated
-    const lockState = loadLockFile(join(tmpDir, "flaregun.lock"));
-    expect(lockState.tunnel!.id).toBe("tun-1");
+  test("deriveTunnelName turns dots into dashes", () => {
+    expect(deriveTunnelName("my.example.com")).toBe("my-example-com-tunnel");
+  });
 
-    // Summary should show skipped files
-    expect(output.some((m) => m.includes("skipped"))).toBe(true);
-
-    rmSync(tmpDir, { recursive: true, force: true });
+  test("setup doesn't leave a .env behind when the token step never finishes", async () => {
+    const cf = new FakeCloudflare();
+    const result = await runSetup(deps(cf, scriptedIO([]), scriptedDashboard(["unknown"])));
+    expect(result.success).toBe(false);
+    expect(existsSync(join(cwd, ".env"))).toBe(false);
   });
 });

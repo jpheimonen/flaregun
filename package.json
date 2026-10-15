@@ -3,6 +3,9 @@
   "version": "0.0.1",
   "type": "module",
   "private": true,
+  "bin": {
+    "flaregun": "./src/cli/index.ts"
+  },
   "scripts": {
     "test": "bun test"
   },
