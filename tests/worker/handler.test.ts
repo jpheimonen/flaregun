@@ -124,6 +124,8 @@ describe("Worker handler: pass-through behavior", () => {
 });
 
 // --- Offline fallback tests ---
+// Parse fallback destinations because Bun versions differ in whether redirect
+// headers serialize an empty root path with a trailing slash.
 
 describe("Worker handler: offline fallback", () => {
   test("origin 502 status triggers redirect to down.example.com", async () => {
@@ -137,8 +139,8 @@ describe("Worker handler: offline fallback", () => {
     );
 
     expect(response.status).toBe(302);
-    expect(response.headers.get("Location")).toBe(
-      "https://down.example.com",
+    expect(new URL(response.headers.get("Location")!).href).toBe(
+      "https://down.example.com/",
     );
   });
 
@@ -153,8 +155,8 @@ describe("Worker handler: offline fallback", () => {
     );
 
     expect(response.status).toBe(302);
-    expect(response.headers.get("Location")).toBe(
-      "https://down.example.com",
+    expect(new URL(response.headers.get("Location")!).href).toBe(
+      "https://down.example.com/",
     );
   });
 
@@ -169,8 +171,8 @@ describe("Worker handler: offline fallback", () => {
     );
 
     expect(response.status).toBe(302);
-    expect(response.headers.get("Location")).toBe(
-      "https://down.example.com",
+    expect(new URL(response.headers.get("Location")!).href).toBe(
+      "https://down.example.com/",
     );
   });
 
@@ -183,8 +185,8 @@ describe("Worker handler: offline fallback", () => {
     );
 
     expect(response.status).toBe(302);
-    expect(response.headers.get("Location")).toBe(
-      "https://down.example.com",
+    expect(new URL(response.headers.get("Location")!).href).toBe(
+      "https://down.example.com/",
     );
   });
 });
@@ -335,8 +337,8 @@ describe("Worker handler: unified failure handling", () => {
     );
 
     expect(response.status).toBe(302);
-    expect(response.headers.get("Location")).toBe(
-      "https://down.example.com",
+    expect(new URL(response.headers.get("Location")!).href).toBe(
+      "https://down.example.com/",
     );
   });
 
@@ -349,8 +351,8 @@ describe("Worker handler: unified failure handling", () => {
     );
 
     expect(response.status).toBe(302);
-    expect(response.headers.get("Location")).toBe(
-      "https://down.example.com",
+    expect(new URL(response.headers.get("Location")!).href).toBe(
+      "https://down.example.com/",
     );
   });
 
@@ -402,8 +404,8 @@ describe("Worker handler: domain parameterization", () => {
       mockOrigin(new Response("Bad Gateway", { status: 502 })),
     );
     expect(failResponse.status).toBe(302);
-    expect(failResponse.headers.get("Location")).toBe(
-      "https://down.my-site.io",
+    expect(new URL(failResponse.headers.get("Location")!).href).toBe(
+      "https://down.my-site.io/",
     );
 
     // Bare domain passthrough
