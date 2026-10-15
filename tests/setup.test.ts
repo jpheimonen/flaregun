@@ -182,7 +182,7 @@ describe("running setup again", () => {
   test("a token in .env that stopped working is replaced through the dashboard", async () => {
     const cf = new FakeCloudflare();
     cf.addToken("bootstrap-token", "bootstrap");
-    writeFileSync(join(cwd, ".env"), "CLOUDFLARE_API_TOKEN=revoked\n");
+    writeFileSync(join(cwd, ".env"), "CLOUDFLARE_API_TOKEN=revoked\n", { mode: 0o644 });
 
     const io = scriptedIO([""]);
     const result = await runSetup(deps(cf, io, scriptedDashboard(["bootstrap-token"])));
@@ -191,6 +191,8 @@ describe("running setup again", () => {
     expect(io.output.join("\n")).toContain("no longer works");
     expect(readEnv()).toContain("CLOUDFLARE_API_TOKEN=flaregun-token-1\n");
     expect(readEnv()).not.toContain("revoked");
+    // An older, world-readable .env is tightened once it holds new secrets.
+    expect(statSync(join(cwd, ".env")).mode & 0o777).toBe(0o600);
   });
 
   test("an existing tunnel with the domain's name is reused when the lock file is gone", async () => {

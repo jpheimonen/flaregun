@@ -14,7 +14,7 @@
  * Running it again is safe: every step reuses what already exists.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import { load } from "js-yaml";
 import type { CloudflareClient } from "../cloudflare/index.js";
@@ -454,6 +454,8 @@ export async function runSetup(deps: SetupDeps): Promise<SetupResult> {
       }),
       { encoding: "utf-8", mode: 0o600 },
     );
+    // mode only applies to new files; an older .env may be readable by others.
+    chmodSync(envPath, 0o600);
 
     const configDomain = readConfigDomain(configPath);
     const { accountId, zoneId, domain } = await stepAccountAndDomain(deps, client, configDomain);
