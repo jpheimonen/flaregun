@@ -1,0 +1,32 @@
+[
+  {
+    "check": "docs",
+    "run": true,
+    "reason": "The README or knowledge may describe how existing Access apps, the lock file and destroy behave, and that behavior changed.",
+    "command": ""
+  },
+  {
+    "check": "build",
+    "run": false,
+    "reason": "No dependencies, build configuration or bundled UI code changed; the type check already passed.",
+    "command": ""
+  },
+  {
+    "check": "smoke",
+    "run": false,
+    "reason": "The changed path needs a live Cloudflare account with a conflicting app, which this checkout can't reach safely; mocked tests cover it.",
+    "command": ""
+  },
+  {
+    "check": "full_tests",
+    "run": true,
+    "reason": "Sync code and the shared mock client are used by many tests across the core suite.",
+    "command": "taiga runner tests-core"
+  },
+  {
+    "check": "security",
+    "run": false,
+    "reason": "No auth, secrets, input parsing, shell or dependency changes; the change only affects precedence and lock bookkeeping.",
+    "command": ""
+  }
+]
