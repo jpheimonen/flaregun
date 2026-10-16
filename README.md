@@ -17,9 +17,12 @@ You need [Bun](https://bun.sh) and a Cloudflare account with a domain on it.
 
 ```bash
 git clone https://github.com/jpheimonen/flaregun && cd flaregun
-bun install && (cd admin-ui && bun install && bun run build)
-bun link          # puts `flaregun` on your PATH
+make install      # installs dependencies, builds the admin UI, and links `flaregun`
 ```
+
+The command links this checkout into Bun's global bin directory (usually
+`~/.bun/bin`); keep the checkout and ensure that directory is on your PATH.
+Without Make, run `bun install && (cd admin-ui && bun install && bun run build) && bun link`.
 
 If `cloudflared` isn't installed, `flaregun up` offers to download it into `~/.local/share/flaregun/bin` (Linux and macOS). Deploying Pages sites also needs [wrangler](https://developers.cloudflare.com/workers/wrangler/).
 
