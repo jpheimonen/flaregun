@@ -149,6 +149,8 @@ Resources are accessible in Pages Functions via `context.env.DB`, `context.env.B
 
 Deploys are idempotent — flaregun checks the lock file before provisioning and only creates resources that don't already exist.
 
+If a Cloudflare Access app for a hostname already exists and flaregun didn't create it (for example, one set up from another machine), flaregun reuses it and adds its own policy after the app's existing policies. It leaves the app out of `flaregun.lock` and doesn't touch the other policies, so removing the service or running `flaregun destroy` never deletes that app.
+
 ## Admin UI
 
 When running `flaregun up`, a built-in admin dashboard is served at `admin.yourdomain.com` (protected by `admin_only` Cloudflare Access). It provides:
