@@ -22,6 +22,21 @@ export interface MockPolicy {
   name: string;
   decision: string;
   include: unknown[];
+  precedence?: number;
+}
+
+/** Rejects a policy write the way Cloudflare does when precedences collide. */
+function assertUniquePrecedence(
+  appPolicies: MockPolicy[],
+  precedence: number | undefined,
+  policyId?: string,
+): void {
+  if (precedence === undefined) return;
+  if (appPolicies.some((p) => p.id !== policyId && p.precedence === precedence)) {
+    throw new Error(
+      "400 access.api.error.invalid_request: policy precedences must be unique",
+    );
+  }
 }
 
 /** Mock DNS record */
@@ -185,12 +200,15 @@ export function createMockClient() {
                 name: string;
                 decision: string;
                 include: unknown[];
+                precedence?: number;
               };
+              assertUniquePrecedence(policies[appId] ?? [], params.precedence);
               const newPolicy: MockPolicy = {
                 id: `policy-${params.name}-${nextCounter()}`,
                 name: params.name,
                 decision: params.decision,
                 include: params.include,
+                precedence: params.precedence,
               };
               if (!policies[appId]) policies[appId] = [];
               policies[appId].push(newPolicy);
@@ -204,14 +222,17 @@ export function createMockClient() {
                 name: string;
                 decision: string;
                 include: unknown[];
+                precedence?: number;
               };
               const appPolicies = policies[appId] ?? [];
+              assertUniquePrecedence(appPolicies, params.precedence, policyId);
               const idx = appPolicies.findIndex((p) => p.id === policyId);
               if (idx >= 0) {
                 appPolicies[idx] = {
                   ...appPolicies[idx],
                   include: params.include,
                   decision: params.decision,
+                  precedence: params.precedence ?? appPolicies[idx].precedence,
                 };
               }
               return appPolicies[idx];

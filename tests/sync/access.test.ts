@@ -631,6 +631,85 @@ describe("sync: Access Policies", () => {
 
 // --- Combined Access Sync Tests ---
 
+describe("sync: Access apps flaregun didn't create", () => {
+  const foreignAdmin = {
+    id: "foreign-admin",
+    name: "Admin (other machine)",
+    domain: "admin.example.com",
+    type: "self_hosted",
+  };
+  const foreignPolicy = {
+    id: "foreign-policy",
+    name: "Allow me",
+    decision: "allow",
+    include: [{ email: { email: "me@example.com" } }],
+    precedence: 1,
+  };
+
+  test("a new policy on an existing app gets a precedence above the app's existing policies", async () => {
+    const mockClient = createMockClient();
+    mockClient.setApps([foreignAdmin]);
+    mockClient.setPolicies({
+      "foreign-admin": [foreignPolicy, { ...foreignPolicy, id: "p2", name: "Other", precedence: 3 }],
+    });
+
+    await runFullAccessSync(mockClient, makeConfig(), emptyState());
+
+    const adminPolicies = mockClient.getPolicies()["foreign-admin"];
+    const ours = adminPolicies.find((p) => p.name === ADMIN_LOCK_KEY);
+    expect(ours?.precedence).toBe(4);
+    // The existing policies are left alone
+    expect(adminPolicies.find((p) => p.id === "foreign-policy")).toEqual(foreignPolicy);
+    expect(mockClient.getCalls("policies.delete")).toHaveLength(0);
+  });
+
+  test("updating flaregun's policy keeps its precedence", async () => {
+    const mockClient = createMockClient();
+    mockClient.setApps([foreignAdmin]);
+    mockClient.setPolicies({
+      "foreign-admin": [
+        foreignPolicy,
+        { id: "ours", name: ADMIN_LOCK_KEY, decision: "allow", include: [], precedence: 2 },
+      ],
+    });
+
+    await runFullAccessSync(mockClient, makeConfig(), emptyState());
+
+    const updates = mockClient.getCalls("policies.update");
+    expect(updates).toHaveLength(1);
+    expect((updates[0][2] as { precedence: number }).precedence).toBe(2);
+  });
+
+  test("an existing app flaregun didn't create is reused but kept out of the lock file", async () => {
+    const mockClient = createMockClient();
+    mockClient.setApps([foreignAdmin]);
+    const lockState = emptyState();
+
+    const managedApps = await runAppSync(mockClient, makeConfig(), lockState);
+
+    expect(managedApps.find((a) => a.name === ADMIN_LOCK_KEY)?.id).toBe("foreign-admin");
+    expect(mockClient.getCalls("applications.create")).toHaveLength(1); // blog only
+    expect(lockState.access[ADMIN_LOCK_KEY]).toBeUndefined();
+    expect(lockState.access["blog"]).toBeDefined();
+  });
+
+  test("a lock entry that points at an app flaregun didn't create is dropped, so the app is never deleted", async () => {
+    const mockClient = createMockClient();
+    const foreignBlog = { id: "foreign-blog", name: "My blog", domain: "blog.example.com", type: "self_hosted" };
+    mockClient.setApps([foreignBlog]);
+    // An earlier flaregun version recorded any app with a matching domain
+    const lockState = emptyState();
+    lockState.access["blog"] = { app_id: "foreign-blog" };
+
+    await runAppSync(mockClient, makeConfig(), lockState);
+    expect(lockState.access["blog"]).toBeUndefined();
+
+    // Removing the service from config must not delete the other app
+    await runAppSync(mockClient, makeConfig({ services: {} }), lockState);
+    expect(mockClient.getCalls("applications.delete")).toHaveLength(0);
+  });
+});
+
 describe("sync: Combined Access Sync", () => {
   test("a full access sync for a multi-service config creates the expected applications and policies", async () => {
     const mockClient = createMockClient();

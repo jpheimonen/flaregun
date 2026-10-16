@@ -97,13 +97,22 @@ export async function syncAccessApplications(
     const existing = existingApps.find((e) => e.domain === app.hostname);
 
     if (existing?.id) {
-      // Application exists — skip creation, record in lock state
+      // Application exists — reuse it instead of creating a duplicate.
       managedApps.push({
         id: existing.id,
         name: app.key,
         hostname: app.hostname,
       });
-      lockState.access[app.key] = { app_id: existing.id };
+      // Only track it in the lock file if flaregun created it: the lock already
+      // points at it and it still has the name flaregun gave it. Apps set up some
+      // other way (e.g. by hand or from another machine) stay out of the lock, so
+      // removing the service or running destroy never deletes them.
+      const createdByFlaregun =
+        existing.name === app.key &&
+        lockState.access[app.key]?.app_id === existing.id;
+      if (!createdByFlaregun) {
+        delete lockState.access[app.key];
+      }
     } else {
       // Create new self-hosted Access application
       const created = (await client.zeroTrust.access.applications.create({
@@ -172,8 +181,11 @@ function buildDesiredApps(config: FlaregunConfig): DesiredApp[] {
 /**
  * Syncs Cloudflare Access policies for each managed application.
  *
- * - Creates policies for applications that don't have one
- * - Updates policies when selectors have changed (detected via JSON comparison)
+ * - Creates a policy named after the lock key when the app doesn't have one, at a
+ *   precedence above any policies already on the app
+ * - Updates that policy when selectors have changed (detected via JSON comparison),
+ *   keeping its precedence
+ * - Leaves policies with other names alone
  * - Skips unchanged policies (idempotent)
  *
  * Policies for deleted applications are implicitly cleaned up when the application
@@ -195,6 +207,7 @@ export async function syncAccessPolicies(
       name?: string;
       include?: unknown[];
       decision?: string;
+      precedence?: number;
     }>(
       client.zeroTrust.access.applications.policies.list(app.id, {
         account_id: accountId,
@@ -204,13 +217,18 @@ export async function syncAccessPolicies(
     const existingPolicy = existingPolicies.find((p) => p.name === app.name);
 
     if (!existingPolicy) {
-      // Create new policy
+      // Create new policy. Precedence must be unique within the app, and the app
+      // may already carry policies flaregun didn't create, so go after them all.
+      const highestPrecedence = Math.max(
+        0,
+        ...existingPolicies.map((p) => p.precedence ?? 0),
+      );
       await client.zeroTrust.access.applications.policies.create(app.id, {
         account_id: accountId,
         decision: "allow",
         include: selectors,
         name: app.name,
-        precedence: 1,
+        precedence: highestPrecedence + 1,
       } as Parameters<
         typeof client.zeroTrust.access.applications.policies.create
       >[1]);
@@ -227,7 +245,7 @@ export async function syncAccessPolicies(
             decision: "allow",
             include: selectors,
             name: app.name,
-            precedence: 1,
+            precedence: existingPolicy.precedence,
           } as Parameters<
             typeof client.zeroTrust.access.applications.policies.update
           >[2],
